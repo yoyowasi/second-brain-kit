@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 
@@ -21,13 +22,39 @@ class SecondBrainTests(unittest.TestCase):
                         SECOND_BRAIN=str(self.vault), PYTHONDONTWRITEBYTECODE="1")
         self.sb("init", str(self.vault))
 
-    def sb(self, *args, exit_code=0):
-        result = subprocess.run([sys.executable, str(SCRIPT), *args], cwd=self.root,
+    def sb(self, *args, exit_code=0, bootstrap=None, forbidden_reads=()):
+        if forbidden_reads:
+            guard = textwrap.dedent('''
+                import os
+                from pathlib import Path
+                blocked_reads = {os.path.normcase(os.path.realpath(p)) for p in __DENIED__}
+                original_read_text = Path.read_text
+                def guarded_read_text(path, *args, **kwargs):
+                    actual = os.path.normcase(os.path.realpath(path))
+                    if actual in blocked_reads:
+                        raise AssertionError("Forbidden note content read: " + str(path))
+                    return original_read_text(path, *args, **kwargs)
+                Path.read_text = guarded_read_text
+                print("content-read-guard-active")
+            ''').replace("__DENIED__", repr([str(p) for p in forbidden_reads]))
+            runner = bootstrap or '''
+                import runpy, sys
+                sys.argv = sys.argv[1:]
+                runpy.run_path(sys.argv[0], run_name="__main__")
+            '''
+            bootstrap = guard + "\n" + textwrap.dedent(runner)
+        command = ([sys.executable, "-c", textwrap.dedent(bootstrap), str(SCRIPT), *args]
+                   if bootstrap else [sys.executable, str(SCRIPT), *args])
+        result = subprocess.run(command, cwd=self.root,
                                 env=self.env, capture_output=True, text=True,
                                 encoding="utf-8", timeout=15)
+        self.assertNotIn("Traceback", result.stdout + result.stderr)
         self.assertEqual(result.returncode, exit_code,
                          f"{args}\n{result.stdout}\n{result.stderr}")
-        return result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        if forbidden_reads:
+            self.assertIn("content-read-guard-active", output)
+        return output
 
     def configure(self, **values):
         path = self.settings / "config.json"
@@ -49,6 +76,15 @@ class SecondBrainTests(unittest.TestCase):
             _winapi.CreateJunction(str(target), str(link))
         else:
             link.symlink_to(target, target_is_directory=True)
+        self.addCleanup(self.remove_directory_link, link)
+
+    @staticmethod
+    def remove_directory_link(link):
+        if os.path.lexists(link):
+            if os.name == "nt":
+                os.rmdir(link)
+            else:
+                link.unlink()
 
     def linked_vault(self):
         obsidian = self.root / "obsidian"
@@ -59,7 +95,9 @@ class SecondBrainTests(unittest.TestCase):
         return obsidian, alias
 
     def test_starter_lint(self):
-        self.assertIn("문제 0건", self.sb("lint"))
+        dotfile = self.vault / ".md"
+        dotfile.write_text("not a Markdown note", encoding="utf-8")
+        self.assertIn("문제 0건", self.sb("lint", forbidden_reads=[dotfile]))
 
     def test_seven_note_kinds(self):
         cases = [("daily", "2026-10-15"), ("weekly", "2026-W42"),
@@ -97,26 +135,29 @@ class SecondBrainTests(unittest.TestCase):
     def test_existing_vault_init_rejected(self):
         path = self.vault / "Home.md"
         original = path.read_bytes()
-        self.sb("init", str(self.vault), exit_code=1)
+        self.assertIn("이미 노트가 있는 폴더", self.sb("init", str(self.vault), exit_code=1))
         self.assertEqual(path.read_bytes(), original)
 
     def test_dry_run_and_secret_title(self):
         self.sb("new", "inbox", "Preview", "--dry-run")
         self.assertFalse((self.vault / "00_Inbox/Preview.md").exists())
-        self.sb("new", "inbox", "API token", exit_code=1)
+        self.assertIn("비밀 파일", self.sb("new", "inbox", "API token", exit_code=1))
         self.assertFalse((self.vault / "00_Inbox/API token.md").exists())
 
     def test_tasks_and_stale_do_not_read_excluded_files(self):
-        # Invalid UTF-8 makes any accidental read fail, even without printed contents.
+        # Guard actual content reads; decoding errors alone are intentionally tolerated.
         (self.root / ".obsidian").mkdir()
+        forbidden = []
         for relative in ("10_Daily/2026-10-01.md", "20_Projects/Private.md",
                          "20_Projects/API token.md"):
-            (self.vault / relative).write_bytes(b"\xff")
+            path = self.vault / relative
+            path.write_bytes(b"\xff")
+            forbidden.append(path)
         self.configure(exclude=["10_Daily/2026-10-01.md", "vault/20_Projects/Private.md"])
         self.project("Visible")
         for command in ("tasks", "stale"):
             with self.subTest(command=command):
-                output = self.sb(command)
+                output = self.sb(command, forbidden_reads=forbidden)
                 self.assertIn("[[Visible]]", output)
                 for hidden in ("Private", "API token", "2026-10-01"):
                     self.assertNotIn(hidden, output)
@@ -127,7 +168,9 @@ class SecondBrainTests(unittest.TestCase):
         (folder / "Unread.md").write_bytes(b"\xff")
         self.configure(folders={"project": "secret-projects"})
         for command in ("tasks", "stale"):
-            self.assertNotIn("Unread", self.sb(command, exit_code=1))
+            output = self.sb(command, exit_code=1, forbidden_reads=[folder / "Unread.md"])
+            self.assertIn("제외된 노트 폴더", output)
+            self.assertNotIn("Unread", output)
 
     def test_outside_folders_rejected_by_all_consumers(self):
         outside = self.root / "outside"
@@ -142,7 +185,8 @@ class SecondBrainTests(unittest.TestCase):
             for kind, command in cases:
                 with self.subTest(destination=destination, kind=kind, command=command):
                     self.configure(folders={kind: destination})
-                    self.assertIn("볼트 안", self.sb(*command, exit_code=1))
+                    self.assertIn("볼트 안", self.sb(*command, exit_code=1,
+                                  forbidden_reads=[outside / "2026-10-01.md"]))
         self.assertEqual([p.name for p in outside.iterdir()], ["2026-10-01.md"])
 
     def test_vault_prefix_sibling_rejected(self):
@@ -165,7 +209,8 @@ class SecondBrainTests(unittest.TestCase):
         _, alias = self.linked_vault()
         (self.vault / "00_Inbox/password.md").write_bytes(b"\xff")
         output = self.sb("lint", str(alias / "00_Inbox/password.md"),
-                         str(alias / "99_System/Templates/Daily.md"))
+                         str(alias / "99_System/Templates/Daily.md"),
+                         forbidden_reads=[self.vault / "00_Inbox/password.md"])
         self.assertIn("제외된 경로(읽지 않음)", output)
         self.assertIn("건너뜀(점검 대상 아님", output)
         self.assertIn("점검(지정한 파일) 0개, 문제 0건", output)
@@ -186,11 +231,12 @@ class SecondBrainTests(unittest.TestCase):
         self.project("Visible")
         for command in ("tasks", "stale"):
             with self.subTest(command=command):
-                output = self.sb(command)
+                output = self.sb(command, forbidden_reads=[self.vault / "20_Projects/Excluded.md"])
                 self.assertIn("[[Visible]]", output)
                 self.assertNotIn("Excluded", output)
         self.assertIn("제외된 경로(읽지 않음)",
-                      self.sb("lint", str(alias / "20_Projects/Excluded.md")))
+                      self.sb("lint", str(alias / "20_Projects/Excluded.md"),
+                              forbidden_reads=[self.vault / "20_Projects/Excluded.md"]))
 
     def test_linked_vault_resolves_links_in_obsidian_parent(self):
         obsidian, alias = self.linked_vault()
@@ -202,12 +248,20 @@ class SecondBrainTests(unittest.TestCase):
         self.assertIn("문제 0건", self.sb("lint", str(note)))
 
     def test_unapproved_obsidian_parent_links_are_unresolved(self):
+        # The parent is now indexed by name, while its contents still require permission.
         obsidian, alias = self.linked_vault()
-        (obsidian / "Parent.md").write_text("# Parent\n", encoding="utf-8")
+        (obsidian / "Parent.md").write_bytes(b"\xff")
         note = alias / "00_Inbox/Root Link.md"
         note.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n[[Parent]]\n",
                         encoding="utf-8")
-        self.assertIn("깨진 링크 [[Parent]]", self.sb("lint", str(note), exit_code=1))
+        forbidden = [obsidian / "Parent.md"]
+        self.assertIn("점검(지정한 파일) 1개, 문제 0건",
+                      self.sb("lint", str(note), forbidden_reads=forbidden))
+        self.assertIn("문제 0건", self.sb("lint", forbidden_reads=forbidden))
+        self.assertIn("제외된 경로(읽지 않음)",
+                      self.sb("lint", str(obsidian / "Parent.md"), forbidden_reads=forbidden))
+        self.sb("tags", forbidden_reads=forbidden)
+        self.sb("backlinks", "Root Link", forbidden_reads=forbidden)
 
     def test_excluded_directory_aliases_are_rejected(self):
         (self.root / ".obsidian").mkdir()
@@ -228,14 +282,15 @@ class SecondBrainTests(unittest.TestCase):
                 self.configure(exclude=[exclusion] if exclusion else [],
                                folders={"project": alias_name})
                 for command in ("tasks", "stale"):
-                    output = self.sb(command, exit_code=1)
+                    output = self.sb(command, exit_code=1, forbidden_reads=[note])
+                    self.assertIn("제외된 노트 폴더", output)
                     self.assertNotIn("blocked-task", output)
                     self.assertNotIn("[[LinkedPayload]]", output)
-                self.assertNotIn("blocked-tag", self.sb("tags"))
-                self.assertIn("백링크 없음", self.sb("backlinks", "BlockedTarget"))
-                self.assertIn("문제 0건", self.sb("lint"))
+                self.assertNotIn("blocked-tag", self.sb("tags", forbidden_reads=[note]))
+                self.assertIn("백링크 없음", self.sb("backlinks", "BlockedTarget", forbidden_reads=[note]))
+                self.assertIn("문제 0건", self.sb("lint", forbidden_reads=[note]))
                 for explicit in (note, self.vault / alias_name / note.name):
-                    output = self.sb("lint", str(explicit))
+                    output = self.sb("lint", str(explicit), forbidden_reads=[note])
                     self.assertIn("점검(지정한 파일) 0개, 문제 0건", output)
                 # Keep every earlier target excluded during the next subtest.
                 note.unlink()
@@ -251,20 +306,20 @@ class SecondBrainTests(unittest.TestCase):
                         "- [ ] external-task\n[[ExternalTarget]]\n", encoding="utf-8")
         os.utime(note, (946684800, 946684800))
         for command in ("tasks", "stale"):
-            output = self.sb(command)
+            output = self.sb(command, forbidden_reads=[note])
             self.assertNotIn("ExternalPayload", output)
             self.assertNotIn("external-task", output)
-        self.assertNotIn("external-tag", self.sb("tags"))
-        self.assertIn("백링크 없음", self.sb("backlinks", "ExternalTarget"))
-        self.assertIn("문제 0건", self.sb("lint"))
+        self.assertNotIn("external-tag", self.sb("tags", forbidden_reads=[note]))
+        self.assertIn("백링크 없음", self.sb("backlinks", "ExternalTarget", forbidden_reads=[note]))
+        self.assertIn("문제 0건", self.sb("lint", forbidden_reads=[note]))
         for explicit in (note, link / note.name):
             self.assertIn("점검(지정한 파일) 0개, 문제 0건",
-                          self.sb("lint", str(explicit)))
+                          self.sb("lint", str(explicit), forbidden_reads=[note]))
         self.configure(folders={"project": "20_Projects/Ext"})
         for command in ("tasks", "stale"):
-            self.sb(command, exit_code=1)
+            self.assertIn("볼트 안", self.sb(command, exit_code=1, forbidden_reads=[note]))
         self.configure(folders={})
-        self.sb("new", "inbox", "ExternalPayload")
+        self.sb("new", "inbox", "ExternalPayload", forbidden_reads=[note])
         self.assertTrue((self.vault / "00_Inbox/ExternalPayload.md").is_file())
 
     def test_link_index_does_not_follow_unapproved_external_junction(self):
@@ -276,7 +331,8 @@ class SecondBrainTests(unittest.TestCase):
         source.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n"
                           "[[ExternalTarget]]\n", encoding="utf-8")
         self.assertIn("깨진 링크 [[ExternalTarget]]",
-                      self.sb("lint", str(source), exit_code=1))
+                      self.sb("lint", str(source), exit_code=1,
+                              forbidden_reads=[outside / "ExternalTarget.md"]))
 
     def test_approved_outside_root_is_read_and_labeled_by_real_location(self):
         outside = self.root / "outside"
@@ -292,6 +348,8 @@ class SecondBrainTests(unittest.TestCase):
         self.assertNotIn("Allowed.md\t볼트 안", output)
         self.assertIn("점검(지정한 파일) 1개, 문제 0건",
                       self.sb("lint", str(link / note.name)))
+        self.assertIn("점검(지정한 파일) 1개, 문제 0건",
+                      self.sb("lint", str(note)))
 
     def test_directory_loops_are_not_followed(self):
         self.directory_link(self.vault, self.vault / "20_Projects/Loop")
@@ -300,6 +358,213 @@ class SecondBrainTests(unittest.TestCase):
             self.sb(*command)
         self.sb("new", "inbox", "Loop Safe")
         self.assertTrue((self.vault / "00_Inbox/Loop Safe.md").is_file())
+
+    def test_broken_directory_link_does_not_crash_commands(self):
+        target = self.root / "deleted-target"
+        target.mkdir()
+        link = self.vault / "20_Projects/Broken"
+        self.directory_link(target, link)
+        target.rmdir()
+        for command in (("tasks",), ("stale",), ("tags",),
+                        ("backlinks", "Missing"), ("lint",), ("today",),
+                        ("new", "inbox", "Broken Link Safe", "--dry-run")):
+            with self.subTest(command=command):
+                self.sb(*command)
+        self.assertIn("파일 없음", self.sb("lint", str(link), exit_code=1))
+
+    def test_outside_aliases_cannot_bypass_exclusions(self):
+        cases = [(self.vault / "Hidden", "Hidden"),
+                 (self.vault / "secrets", None),
+                 (self.root / "ExternalHidden", str(self.root / "ExternalHidden")),
+                 (self.root / "secrets", None)]
+        for index, (target, exclusion) in enumerate(cases):
+            with self.subTest(target=target):
+                target.mkdir()
+                alias = self.vault / f"OutsideAlias{index}"
+                self.directory_link(target, alias)
+                note = target / "BlockedOutside.md"
+                # The read spy below rejects content access through both alias and real paths.
+                note.write_bytes(b"\xff")
+                self.configure(read_outside=[alias.name],
+                               exclude=[exclusion] if exclusion else [])
+                self.sb("tags", forbidden_reads=[note])
+                self.assertIn("백링크 없음", self.sb("backlinks", "BlockedTarget", forbidden_reads=[note]))
+                self.assertIn("문제 0건", self.sb("lint", forbidden_reads=[note]))
+                for explicit in (note, alias / note.name):
+                    output = self.sb("lint", str(explicit), forbidden_reads=[note])
+                    self.assertIn("제외된 경로(읽지 않음)", output)
+                    self.assertIn("점검(지정한 파일) 0개, 문제 0건", output)
+                note.unlink()
+
+    def test_secret_ancestor_and_vault_names_do_not_hide_notes(self):
+        secret_parent = self.root / "secret-parent"
+        secret_parent.mkdir()
+        renamed = secret_parent / "token-vault"
+        self.vault.rename(renamed)
+        self.vault = renamed
+        alias = self.root / "password-alias"
+        self.directory_link(self.vault, alias)
+        for active_vault in (self.vault, alias):
+            with self.subTest(vault=active_vault):
+                self.env["SECOND_BRAIN"] = str(active_vault)
+                path = self.project("Visible")
+                text = path.read_text(encoding="utf-8").replace("status: active", "status: active\ntags: [visible-tag]")
+                path.write_text(text, encoding="utf-8")
+                self.assertIn("visible-tag\t1", self.sb("tags"))
+                self.assertIn("Visible task", self.sb("tasks"))
+                self.assertIn("문제 0건", self.sb("lint"))
+                self.assertIn("이미 있습니다", self.sb("new", "project", "Visible", exit_code=1))
+                self.sb("new", "inbox", "New Allowed", "--dry-run")
+
+    def test_explicitly_excluded_vault_root_reports_reason(self):
+        self.configure(exclude=["."])
+        for command in (("tags",), ("lint",), ("tasks",),
+                        ("stale",), ("today",), ("new", "inbox", "Blocked")):
+            with self.subTest(command=command):
+                self.assertIn("제외", self.sb(*command, exit_code=1))
+        self.assertFalse((self.vault / "00_Inbox/Blocked.md").exists())
+
+    def test_disappearing_directory_is_skipped(self):
+        doomed = self.vault / "20_Projects/Disappearing"
+        doomed.mkdir()
+        bootstrap = '''
+            import os, runpy, sys
+            from pathlib import Path
+            original = os.scandir
+            doomed = Path(os.environ["SECOND_BRAIN"]) / "20_Projects/Disappearing"
+            class Entries:
+                def __init__(self, entries): self.entries = iter(entries)
+                def __iter__(self): return self
+                def __next__(self): return next(self.entries)
+                def __enter__(self): return self
+                def __exit__(self, *args): self.close()
+                def close(self): pass
+            def scandir(path):
+                scan = original(path)
+                if os.path.abspath(path) != str(doomed.parent):
+                    return scan
+                with scan:
+                    entries = list(scan)
+                if doomed.exists():
+                    doomed.rmdir()
+                    print("removed-directory-before-stat")
+                return Entries(entries)
+            os.scandir = scandir
+            sys.argv = sys.argv[1:]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+        '''
+        output = self.sb("tasks", bootstrap=bootstrap)
+        self.assertIn("removed-directory-before-stat", output)
+        self.assertFalse(doomed.exists())
+
+    def test_unresolvable_outside_roots_are_skipped(self):
+        outside = self.root / "unresolvable"
+        outside.mkdir()
+        (outside / "Unread.md").write_bytes(b"\xff")
+        self.configure(read_outside=[str(outside)])
+        bootstrap = '''
+            import os, runpy, sys
+            original = os.path.realpath
+            blocked = os.path.normcase(os.path.abspath("unresolvable"))
+            def realpath(path, *args, **kwargs):
+                if os.path.normcase(os.path.abspath(path)) == blocked:
+                    print("injected-realpath-failure")
+                    raise ERROR("unresolvable fixture")
+                return original(path, *args, **kwargs)
+            os.path.realpath = realpath
+            sys.argv = sys.argv[1:]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+        '''
+        for error in ("OSError", "RuntimeError"):
+            for command in (("tags",), ("backlinks", "Missing"), ("lint",),
+                            ("new", "inbox", "No Outside Read", "--dry-run")):
+                with self.subTest(error=error, command=command):
+                    self.assertIn("injected-realpath-failure",
+                                  self.sb(*command, bootstrap=bootstrap.replace("ERROR", error),
+                                          forbidden_reads=[outside / "Unread.md"]))
+
+    def test_unresolvable_vault_root_reports_reason(self):
+        bootstrap = '''
+            import os, runpy, sys
+            original = os.path.realpath
+            blocked = os.path.normcase(os.path.abspath(os.environ["SECOND_BRAIN"]))
+            def realpath(path, *args, **kwargs):
+                if os.path.normcase(os.path.abspath(path)) == blocked:
+                    print("injected-realpath-failure")
+                    raise ERROR("unresolvable fixture")
+                return original(path, *args, **kwargs)
+            os.path.realpath = realpath
+            sys.argv = sys.argv[1:]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+        '''
+        for error in ("OSError", "RuntimeError"):
+            with self.subTest(error=error):
+                output = self.sb("tags", exit_code=1,
+                                 bootstrap=bootstrap.replace("ERROR", error))
+                self.assertIn("injected-realpath-failure", output)
+                self.assertIn("볼트 실제 경로를 확인할 수 없습니다", output)
+
+    def test_inaccessible_explicit_lint_file_is_skipped(self):
+        note = self.vault / "00_Inbox/Unread.md"
+        note.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n", encoding="utf-8")
+        bootstrap = '''
+            import os, runpy, sys
+            from pathlib import Path
+            original = Path.is_file
+            blocked = os.path.normcase(os.path.abspath(sys.argv[3]))
+            def is_file(path):
+                if os.path.normcase(os.path.abspath(path)) == blocked:
+                    print("injected-file-permission-error")
+                    raise PermissionError("inaccessible fixture")
+                return original(path)
+            Path.is_file = is_file
+            sys.argv = sys.argv[1:]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+        '''
+        output = self.sb("lint", str(note), bootstrap=bootstrap, forbidden_reads=[note])
+        self.assertIn("injected-file-permission-error", output)
+        self.assertIn("제외된 경로(읽지 않음)", output)
+        self.assertIn("점검(지정한 파일) 0개, 문제 0건", output)
+
+    def test_parent_name_index_keeps_exclusions_and_skips_links(self):
+        obsidian, alias = self.linked_vault()
+        (obsidian / "Hidden.md").write_bytes(b"\xff")
+        (obsidian / "API token.md").write_bytes(b"\xff")
+        hidden = obsidian / "secret-folder"
+        hidden.mkdir()
+        (hidden / "Private.md").write_bytes(b"\xff")
+        external = self.root / "external-parent-index"
+        external.mkdir()
+        (external / "External.md").write_bytes(b"\xff")
+        self.directory_link(external, obsidian / "Linked")
+        self.configure(exclude=["Hidden.md"])
+        source = alias / "00_Inbox/Source.md"
+        prefix = "---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n"
+        forbidden = [obsidian / "Hidden.md", obsidian / "API token.md",
+                     hidden / "Private.md", external / "External.md"]
+        for target in ("Hidden", "API token", "Private", "External"):
+            with self.subTest(target=target):
+                source.write_text(prefix + f"[[{target}]]\n", encoding="utf-8")
+                self.assertIn(f"깨진 링크 [[{target}]]",
+                              self.sb("lint", str(source), exit_code=1, forbidden_reads=forbidden))
+
+    def test_render_rejects_path_traversal(self):
+        outside = self.root / "render-payload.md"
+        outside.write_text("DO-NOT-PRINT-PAYLOAD", encoding="utf-8")
+        for template in ("../../x", "..\\..\\x", "../render-payload", "..", "Daily/../Daily", "Daily\\Daily"):
+            with self.subTest(template=template):
+                output = self.sb("render", template, exit_code=1)
+                self.assertIn("템플릿 이름", output)
+                self.assertNotIn("DO-NOT-PRINT-PAYLOAD", output)
+
+    def test_backlinks_deduplicate_overlapping_real_roots(self):
+        source = self.project("Only Once")
+        source.write_text(source.read_text(encoding="utf-8") + "[[Home]]\n", encoding="utf-8")
+        link = self.vault / "Repeated"
+        self.directory_link(self.vault / "20_Projects", link)
+        self.configure(read_outside=["20_Projects", "Repeated", str(self.vault)])
+        output = self.sb("backlinks", "Home")
+        self.assertEqual(output.count("Only Once.md"), 1, output)
 
     def test_normalized_inside_folder_still_works(self):
         self.configure(folders={"inbox": "00_Inbox/../Custom"})

@@ -43,6 +43,21 @@ class SecondBrainTests(unittest.TestCase):
         os.utime(path, (946684800, 946684800))
         return path
 
+    def directory_link(self, target, link):
+        if os.name == "nt":
+            import _winapi
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            link.symlink_to(target, target_is_directory=True)
+
+    def linked_vault(self):
+        obsidian = self.root / "obsidian"
+        (obsidian / ".obsidian").mkdir(parents=True)
+        alias = obsidian / "Brain"
+        self.directory_link(self.vault, alias)
+        self.env["SECOND_BRAIN"] = str(alias)
+        return obsidian, alias
+
     def test_starter_lint(self):
         self.assertIn("문제 0건", self.sb("lint"))
 
@@ -130,17 +145,60 @@ class SecondBrainTests(unittest.TestCase):
                     self.assertIn("볼트 안", self.sb(*command, exit_code=1))
         self.assertEqual([p.name for p in outside.iterdir()], ["2026-10-01.md"])
 
-    def test_symlink_to_outside_folder_rejected(self):
+    def test_vault_prefix_sibling_rejected(self):
+        sibling = self.root / "vault-x"
+        sibling.mkdir()
+        self.configure(folders={"inbox": "../vault-x"})
+        self.assertIn("볼트 안", self.sb("new", "inbox", "Escape", exit_code=1))
+        self.assertFalse((sibling / "Escape.md").exists())
+
+    def test_linked_outside_folder_rejected(self):
         outside = self.root / "outside"
         outside.mkdir()
         link = self.vault / "linked"
-        try:
-            link.symlink_to(outside, target_is_directory=True)
-        except (OSError, NotImplementedError) as error:
-            self.skipTest(f"Directory symlink unavailable: {error}")
+        self.directory_link(outside, link)
         self.configure(folders={"inbox": "linked"})
         self.assertIn("볼트 안", self.sb("new", "inbox", "Escape", exit_code=1))
         self.assertFalse((outside / "Escape.md").exists())
+
+    def test_linked_vault_lint_preserves_exclusions(self):
+        _, alias = self.linked_vault()
+        (self.vault / "00_Inbox/password.md").write_bytes(b"\xff")
+        output = self.sb("lint", str(alias / "00_Inbox/password.md"),
+                         str(alias / "99_System/Templates/Daily.md"))
+        self.assertIn("제외된 경로(읽지 않음)", output)
+        self.assertIn("건너뜀(점검 대상 아님", output)
+        self.assertIn("점검(지정한 파일) 0개, 문제 0건", output)
+
+    def test_linked_vault_keeps_logical_paths_and_obsidian_root(self):
+        obsidian, alias = self.linked_vault()
+        output = self.sb("where")
+        self.assertIn(f"vault: {alias}\n", output)
+        self.assertIn(f"obsidian_root: {obsidian}\n", output)
+        self.assertIn(str(alias / "00_Inbox/From Alias.md"),
+                      self.sb("new", "inbox", "From Alias"))
+        self.assertTrue((self.vault / "00_Inbox/From Alias.md").is_file())
+
+    def test_linked_vault_root_excludes_apply_to_tasks_and_stale(self):
+        _, alias = self.linked_vault()
+        (self.vault / "20_Projects/Excluded.md").write_bytes(b"\xff")
+        self.configure(exclude=["Brain/20_Projects/Excluded.md"])
+        self.project("Visible")
+        for command in ("tasks", "stale"):
+            with self.subTest(command=command):
+                output = self.sb(command)
+                self.assertIn("[[Visible]]", output)
+                self.assertNotIn("Excluded", output)
+        self.assertIn("제외된 경로(읽지 않음)",
+                      self.sb("lint", str(alias / "20_Projects/Excluded.md")))
+
+    def test_linked_vault_resolves_links_in_obsidian_parent(self):
+        obsidian, alias = self.linked_vault()
+        (obsidian / "Parent.md").write_text("# Parent\n", encoding="utf-8")
+        note = alias / "00_Inbox/Root Link.md"
+        note.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n[[Parent]]\n",
+                        encoding="utf-8")
+        self.assertIn("문제 0건", self.sb("lint", str(note)))
 
     def test_normalized_inside_folder_still_works(self):
         self.configure(folders={"inbox": "00_Inbox/../Custom"})
@@ -151,12 +209,44 @@ class SecondBrainTests(unittest.TestCase):
         links = ["Old", "Old.md", "old", "Folder/OLD.MD#Heading|Alias"]
         for index, link in enumerate(links):
             (self.vault / "00_Inbox" / f"Link {index}.md").write_text(f"[[{link}]]\n", encoding="utf-8")
+        (self.vault / "00_Inbox/Similar.md").write_text("[[Bold]]\n[[Old Notes]]\n", encoding="utf-8")
         for query in ("Old", "old.md", "OLD.MD"):
             with self.subTest(query=query):
                 output = self.sb("backlinks", query)
                 for index in range(len(links)):
                     self.assertIn(f"Link {index}.md", output)
+                self.assertNotIn("Similar.md", output)
         self.assertIn("백링크 없음", self.sb("backlinks", "Unrelated"))
+
+    def test_lint_normalizes_links_and_inbound_names(self):
+        target = self.vault / "50_Notes/Old.md"
+        target.write_text("---\ntype: note\ncreated: 2026-10-01T09:00\n---\n# Old\n", encoding="utf-8")
+        source = self.vault / "00_Inbox/Source.md"
+        for link in ("Old.md", "old", "50_notes/OLD.MD"):
+            with self.subTest(link=link):
+                source.write_text(f"---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n[[{link}]]\n", encoding="utf-8")
+                self.assertIn("문제 0건", self.sb("lint", str(source), str(target)))
+
+    def test_lint_strips_only_one_md_extension(self):
+        target = self.vault / "50_Notes/Double.md.md"
+        target.write_text("---\ntype: note\ncreated: 2026-10-01T09:00\n---\n# Double.md\n", encoding="utf-8")
+        source = self.vault / "00_Inbox/Double Link.md"
+        prefix = "---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n"
+        source.write_text(prefix + "[[DOUBLE.MD.MD]]\n", encoding="utf-8")
+        self.assertIn("문제 0건", self.sb("lint", str(source), str(target)))
+        source.write_text(prefix + "[[Double.md]]\n", encoding="utf-8")
+        self.assertIn("깨진 링크 [[Double.md]]", self.sb("lint", str(source), exit_code=1))
+
+    def test_inline_tags_unquote_each_item(self):
+        (self.vault / "00_Inbox/Inline.md").write_text(
+            "---\ntype: inbox\ntags: ['alpha', \"beta\"]\ncreated: 2026-10-01T09:00\n---\n", encoding="utf-8")
+        (self.vault / "00_Inbox/Block.md").write_text(
+            "---\ntype: inbox\ntags:\n  - alpha\n  - beta\ncreated: 2026-10-01T09:00\n---\n", encoding="utf-8")
+        rows = dict(line.split("\t") for line in self.sb("tags").splitlines())
+        self.assertEqual(rows.get("alpha"), "2")
+        self.assertEqual(rows.get("beta"), "2")
+        self.assertNotIn("'alpha'", rows)
+        self.assertNotIn('"beta"', rows)
 
     def test_quoted_frontmatter_scalars_and_list_items(self):
         for index, quote in enumerate(("'", '"')):

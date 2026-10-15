@@ -107,7 +107,7 @@ def resolve_vault():
         sys.exit("볼트 경로가 설정되지 않았습니다.\n"
                  f'  새로 만들기: python "{me}" init <폴더>\n'
                  f'  기존 볼트:   python "{me}" setup <폴더>   (또는 환경변수 SECOND_BRAIN)')
-    vault = Path(raw).expanduser().resolve()
+    vault = Path(os.path.abspath(Path(raw).expanduser()))
     if not vault.is_dir():
         sys.exit(f"볼트 폴더가 없습니다: {vault}")
     VAULT_FOR_EXCLUDE = vault
@@ -252,20 +252,20 @@ def link_index(root):
         if not p.is_file() or excluded(p, root):
             continue
         rel = p.relative_to(root)
-        stem = rel.with_suffix("").as_posix() if p.suffix == ".md" else rel.as_posix()
+        stem = normalized_link(rel.as_posix())
         names.add(Path(stem).name)
         paths.add(stem)
     return names, paths
 
 
 def resolves(target, names, paths):
-    t = target[:-3] if target.endswith(".md") else target
+    t = normalized_link(target)
     return t in names or t in paths or any(x.endswith("/" + t) for x in paths)
 
 
 def folder_of(vault, kind):
-    folder = (vault / CFG.get("folders", {}).get(kind, KINDS[kind][1])).resolve()
-    if not folder.is_relative_to(vault.resolve()):
+    folder = Path(os.path.abspath(vault / CFG.get("folders", {}).get(kind, KINDS[kind][1])))
+    if not folder.resolve().is_relative_to(vault.resolve()):
         sys.exit(f"노트 폴더는 볼트 안이어야 합니다: {kind} → {folder}")
     return folder
 
@@ -449,7 +449,7 @@ def cmd_tags(a):
             continue
         tags = (frontmatter(p.read_text(encoding="utf-8", errors="replace")) or {}).get("tags", [])
         if isinstance(tags, str):
-            tags = [t.strip() for t in tags.strip("[]").split(",") if t.strip()]
+            tags = [unquote(t) for t in tags.strip("[]").split(",") if t.strip()]
         for t in tags:
             counts[t] = counts.get(t, 0) + 1
     for t, n in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
@@ -493,7 +493,7 @@ def cmd_lint(a):
     inbound = {}
     for p in notes(vault):
         for t in links_of(p.read_text(encoding="utf-8", errors="replace")):
-            inbound.setdefault(Path(t).name, set()).add(p.stem)
+            inbound.setdefault(Path(normalized_link(t)).name, set()).add(p.stem)
     issues, checked = [], 0
     for p in files:
         rel = p.relative_to(vault).as_posix() if p.is_relative_to(vault) else str(p)
@@ -532,10 +532,10 @@ def cmd_lint(a):
         out = links_of(text)
         for target in out:
             # 일일 노트의 날짜 링크(어제·내일)는 아직 없는 날짜를 가리킬 수 있다
-            is_date = re.fullmatch(r"\d{4}-\d{2}-\d{2}", target)
+            is_date = re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized_link(target))
             if not resolves(target, names, paths) and not (is_date and t in {"daily", "weekly"}):
                 issues.append((rel, f"깨진 링크 [[{target}]]"))
-        if t not in {"inbox", "daily", "weekly", "system", ""} and not out and p.stem not in inbound:
+        if t not in {"inbox", "daily", "weekly", "system", ""} and not out and normalized_link(p.name) not in inbound:
             issues.append((rel, "고아 노트(들어오고 나가는 링크 없음)"))
     for rel, msg in issues:
         print(f"{rel}\t{msg}")

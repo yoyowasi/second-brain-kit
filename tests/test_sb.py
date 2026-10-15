@@ -99,6 +99,278 @@ class SecondBrainTests(unittest.TestCase):
         dotfile.write_text("not a Markdown note", encoding="utf-8")
         self.assertIn("문제 0건", self.sb("lint", forbidden_reads=[dotfile]))
 
+    def test_init_and_setup_preserve_path_case(self):
+        target = self.root / "MixedCaseParent" / "MyBrainVault"
+        output = self.sb("init", str(target))
+        self.assertIn(str(target), output)
+        self.assertIn("MixedCaseParent", [p.name for p in self.root.iterdir()])
+        self.assertIn("MyBrainVault", [p.name for p in target.parent.iterdir()])
+        config = json.loads((self.settings / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["vault"], str(target))
+        existing = self.root / "ExistingMixedCase"
+        existing.mkdir()
+        self.assertIn(str(existing), self.sb("setup", str(existing)))
+        config = json.loads((self.settings / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["vault"], str(existing))
+
+    @unittest.skipUnless(os.name == "nt", "Windows trailing-dot normalization")
+    def test_trailing_dot_sibling_cannot_alias_external_junction(self):
+        outside = self.root / "outside-dot-fixture"
+        outside.mkdir()
+        note = outside / "OutsideDot.md"
+        note.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n"
+                        "tags: [outside-dot-tag]\n---\n[[Home]]\n", encoding="utf-8")
+        link = self.vault / "J_out"
+        self.directory_link(outside, link)
+        raw = "\\\\?\\" + str(self.vault / "J_out.")
+        os.mkdir(raw)
+        self.addCleanup(os.rmdir, raw)
+        with open(raw + "\\OutsideDot.md", "w", encoding="utf-8") as stream:
+            stream.write("[[Home]]\n")
+        self.addCleanup(os.unlink, raw + "\\OutsideDot.md")
+        for command in (("tags",), ("backlinks", "Home"), ("lint",),
+                        ("new", "inbox", "OutsideDot", "--dry-run")):
+            with self.subTest(command=command):
+                output = self.sb(*command, forbidden_reads=[note])
+                self.assertNotIn("outside-dot-tag", output)
+                if command[0] != "new":
+                    self.assertNotIn("OutsideDot.md", output)
+        source = self.vault / "00_Inbox/NameProbe.md"
+        source.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n"
+                          "[[OutsideDot]]\n", encoding="utf-8")
+        self.assertIn("깨진 링크 [[OutsideDot]]",
+                      self.sb("lint", str(source), exit_code=1, forbidden_reads=[note]))
+
+    def test_outside_root_below_secret_metadata_ancestor_matches_name_index(self):
+        obsidian = self.root / "obsidian"
+        (obsidian / ".obsidian").mkdir(parents=True)
+        moved = obsidian / "Brain"
+        self.vault.rename(moved)
+        self.vault = moved
+        self.env["SECOND_BRAIN"] = str(moved)
+        outside = obsidian / "secret-parent/Shared"
+        outside.mkdir(parents=True)
+        note = outside / "SharedAllowed.md"
+        note.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n"
+                        "tags: [shared-allowed]\n---\n[[Home]]\n", encoding="utf-8")
+        self.configure(read_outside=[str(outside)])
+        self.assertIn("SharedAllowed.md\t볼트 밖", self.sb("backlinks", "Home"))
+        self.assertIn("점검(지정한 파일) 1개, 문제 0건", self.sb("lint", str(note)))
+        source = moved / "00_Inbox/SharedSource.md"
+        source.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n"
+                          "[[SharedAllowed]]\n", encoding="utf-8")
+        self.assertIn("문제 0건", self.sb("lint", str(source)))
+
+    def test_render_distinguishes_unapproved_and_excluded_templates(self):
+        templates = self.vault / "99_System/Templates"
+        moved = self.root / "SharedTemplates"
+        templates.rename(moved)
+        self.directory_link(moved, templates)
+        output = self.sb("render", "Daily", exit_code=1)
+        self.assertIn("읽기 허용 범위 밖", output)
+        self.assertIn("read_outside", output)
+        self.configure(read_outside=[str(moved)])
+        self.assertIn("type: daily", self.sb("render", "Daily", "--title", "2026-10-15"))
+        self.configure(read_outside=[str(moved)], exclude=[str(moved / "Daily.md")])
+        self.assertIn("제외된 템플릿", self.sb("render", "Daily", exit_code=1))
+
+    def test_name_index_accepts_only_readable_linked_files(self):
+        # A DirEntry spy exercises linked-file handling without Windows symlink privileges.
+        obsidian, _ = self.linked_vault()
+        folder = self.vault / "00_Inbox"
+        linked = folder / "LinkedFile.md"
+        linked.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n[[Home]]\n", encoding="utf-8")
+        source = folder / "LinkedSource.md"
+        source.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n[[LinkedFile]]\n", encoding="utf-8")
+        bootstrap = '''
+            import os, runpy, sys
+            original = os.scandir
+            class Entry:
+                def __init__(self, entry): self.entry = entry
+                def __getattr__(self, key): return getattr(self.entry, key)
+                def is_symlink(self): return self.name == "LinkedFile.md" or self.entry.is_symlink()
+            class Entries:
+                def __init__(self, entries): self.entries = entries
+                def __iter__(self): return self
+                def __next__(self): return Entry(next(self.entries))
+                def __enter__(self): self.entries.__enter__(); return self
+                def __exit__(self, *args): return self.entries.__exit__(*args)
+                def close(self): self.entries.close()
+            os.scandir = lambda path: Entries(original(path))
+            sys.argv = sys.argv[1:]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+        '''
+        self.assertIn("문제 0건", self.sb("lint", str(source), bootstrap=bootstrap))
+        self.configure(exclude=["00_Inbox/LinkedFile.md"])
+        self.assertIn("깨진 링크 [[LinkedFile]]", self.sb("lint", str(source), exit_code=1,
+                      bootstrap=bootstrap, forbidden_reads=[linked]))
+        self.configure(exclude=[])
+        outside = obsidian / "LinkedOutside.md"
+        outside.write_text("[[Home]]\n", encoding="utf-8")
+        redirect = '''
+            original_realpath = os.path.realpath
+            def realpath(path, *args, **kwargs):
+                if os.path.basename(path).casefold() == "linkedfile.md":
+                    return __OUTSIDE__
+                return original_realpath(path, *args, **kwargs)
+            os.path.realpath = realpath
+        '''.replace("__OUTSIDE__", repr(str(outside)))
+        redirected = bootstrap.replace("            sys.argv = sys.argv[1:]",
+                                       redirect.strip("\n") + "\n            sys.argv = sys.argv[1:]")
+        self.assertIn("깨진 링크 [[LinkedFile]]", self.sb("lint", str(source), exit_code=1,
+                      bootstrap=redirected, forbidden_reads=[linked, outside]))
+
+    def test_failed_entry_does_not_skip_later_siblings(self):
+        (self.vault / "20_Projects/BadEntry").mkdir()
+        survivor = self.project("Survivor")
+        survivor.write_text(survivor.read_text(encoding="utf-8").replace(
+            "status: active", "status: active\ntags: [survivor-tag]") + "[[Home]]\n",
+            encoding="utf-8")
+        expected_lint_summary = self.sb("lint").splitlines()[-1]
+        bootstrap = '''
+            import os, runpy, sys
+            original = os.scandir
+            class Entry:
+                def __init__(self, entry): self.entry = entry
+                def __getattr__(self, key): return getattr(self.entry, key)
+                def stat(self, *args, **kwargs):
+                    if self.name == "BadEntry":
+                        print("injected-entry-stat-error")
+                        raise FileNotFoundError("entry disappeared")
+                    return self.entry.stat(*args, **kwargs)
+            class Entries:
+                def __init__(self, entries): self.entries = iter(entries)
+                def __iter__(self): return self
+                def __next__(self): return Entry(next(self.entries))
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def close(self): pass
+            def scandir(path):
+                with original(path) as scan:
+                    entries = sorted(scan, key=lambda entry: (entry.name != "BadEntry", entry.name))
+                return Entries(entries)
+            os.scandir = scandir
+            sys.argv = sys.argv[1:]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+        '''
+        for command, expected in ((("tags",), "survivor-tag\t1"),
+                                  (("backlinks", "Home"), "Survivor.md"),
+                                  (("lint",), expected_lint_summary)):
+            with self.subTest(command=command):
+                output = self.sb(*command, bootstrap=bootstrap)
+                self.assertIn("injected-entry-stat-error", output)
+                self.assertIn(expected, output)
+
+    def test_template_access_denied_reports_reason(self):
+        bootstrap = '''
+            import os, runpy, sys
+            from pathlib import Path
+            original = getattr(Path, "METHOD")
+            def blocked(path, *args, **kwargs):
+                if path.name == "Daily.md" and path.parent.name == "Templates":
+                    print("injected-template-permission-error")
+                    raise PermissionError("template denied")
+                return original(path, *args, **kwargs)
+            setattr(Path, "METHOD", blocked)
+            sys.argv = sys.argv[1:]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+        '''
+        for method in ("read_text", "exists"):
+            with self.subTest(method=method):
+                output = self.sb("render", "Daily", "--title", "2026-10-15",
+                                 exit_code=1 if method == "read_text" else 0,
+                                 bootstrap=bootstrap.replace("METHOD", method))
+                if method == "read_text":
+                    self.assertIn("injected-template-permission-error", output)
+                    self.assertIn("템플릿을 읽을 수 없습니다", output)
+                else:
+                    self.assertNotIn("injected-template-permission-error", output)
+                    self.assertIn("type: daily", output)
+
+    def test_unreadable_vault_reports_reason(self):
+        bootstrap = '''
+            import os, runpy, sys
+            original = os.scandir
+            def scandir(path):
+                if os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.environ["SECOND_BRAIN"]):
+                    print("injected-vault-permission-error")
+                    raise PermissionError("vault denied")
+                return original(path)
+            os.scandir = scandir
+            sys.argv = sys.argv[1:]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+        '''
+        for command in (("tags",), ("lint",), ("tasks",), ("new", "inbox", "Denied")):
+            with self.subTest(command=command):
+                output = self.sb(*command, exit_code=1, bootstrap=bootstrap)
+                self.assertIn("injected-vault-permission-error", output)
+                self.assertIn("볼트 폴더를 읽을 수 없습니다", output)
+
+        stat_bootstrap = '''
+            import os, runpy, sys
+            from pathlib import Path
+            def deny_root(original):
+                def checked(path, *args, **kwargs):
+                    if os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.environ["SECOND_BRAIN"]):
+                        print("injected-vault-stat-denied")
+                        raise PermissionError("vault stat denied")
+                    return original(path, *args, **kwargs)
+                return checked
+            Path.is_dir = deny_root(Path.is_dir)
+            Path.exists = deny_root(Path.exists)
+            sys.argv = sys.argv[1:]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+        '''
+        for command in (("tags",), ("setup", str(self.vault)), ("init", str(self.vault))):
+            with self.subTest(stat_command=command):
+                output = self.sb(*command, exit_code=1, bootstrap=stat_bootstrap)
+                self.assertIn("injected-vault-stat-denied", output)
+                self.assertIn("볼트 폴더를 읽을 수 없습니다", output)
+
+    def test_whole_lint_skips_note_disappearing_after_snapshot(self):
+        note = self.vault / "00_Inbox/Vanished.md"
+        note.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n", encoding="utf-8")
+        bootstrap = '''
+            import runpy, sys
+            from pathlib import Path
+            original = Path.read_text
+            def read_text(path, *args, **kwargs):
+                if path.name == "Vanished.md":
+                    print("injected-disappearing-note")
+                    path.unlink(missing_ok=True)
+                    raise FileNotFoundError("note vanished")
+                return original(path, *args, **kwargs)
+            Path.read_text = read_text
+            sys.argv = sys.argv[1:]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+        '''
+        output = self.sb("lint", bootstrap=bootstrap)
+        self.assertIn("injected-disappearing-note", output)
+        self.assertIn("읽을 수 없는 파일(건너뜀)", output)
+        self.assertIn("문제 0건", output)
+        self.assertFalse(note.exists())
+
+        note.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n", encoding="utf-8")
+        presence_bootstrap = '''
+            import runpy, sys
+            from pathlib import Path
+            original = Path.is_file
+            def is_file(path):
+                if path.name == "Vanished.md":
+                    print("injected-missing-after-snapshot")
+                    path.unlink(missing_ok=True)
+                    return False
+                return original(path)
+            Path.is_file = is_file
+            sys.argv = sys.argv[1:]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+        '''
+        output = self.sb("lint", bootstrap=presence_bootstrap)
+        self.assertIn("injected-missing-after-snapshot", output)
+        self.assertIn("읽을 수 없는 파일(건너뜀)", output)
+        self.assertIn("문제 0건", output)
+        self.assertFalse(note.exists())
+
     def test_seven_note_kinds(self):
         cases = [("daily", "2026-10-15"), ("weekly", "2026-W42"),
                  ("project", "Test Project"), ("fix", "Test Fix"),
@@ -369,7 +641,14 @@ class SecondBrainTests(unittest.TestCase):
                         ("backlinks", "Missing"), ("lint",), ("today",),
                         ("new", "inbox", "Broken Link Safe", "--dry-run")):
             with self.subTest(command=command):
-                self.sb(*command)
+                output = self.sb(*command)
+                self.assertNotIn("Broken/", output)
+                if command[0] == "lint":
+                    self.assertIn("문제 0건", output)
+                elif command[0] == "backlinks":
+                    self.assertIn("백링크 없음", output)
+                elif command[0] == "new":
+                    self.assertIn("Broken Link Safe", output)
         self.assertIn("파일 없음", self.sb("lint", str(link), exit_code=1))
 
     def test_outside_aliases_cannot_bypass_exclusions(self):
@@ -453,9 +732,16 @@ class SecondBrainTests(unittest.TestCase):
             sys.argv = sys.argv[1:]
             runpy.run_path(sys.argv[0], run_name="__main__")
         '''
-        output = self.sb("tasks", bootstrap=bootstrap)
-        self.assertIn("removed-directory-before-stat", output)
-        self.assertFalse(doomed.exists())
+        for command in (("tags",), ("lint",), ("backlinks", "Missing")):
+            with self.subTest(command=command):
+                doomed.mkdir(exist_ok=True)
+                output = self.sb(*command, bootstrap=bootstrap)
+                self.assertIn("removed-directory-before-stat", output)
+                self.assertFalse(doomed.exists())
+                if command[0] == "lint":
+                    self.assertIn("문제 0건", output)
+                elif command[0] == "backlinks":
+                    self.assertIn("백링크 없음", output)
 
     def test_unresolvable_outside_roots_are_skipped(self):
         outside = self.root / "unresolvable"
@@ -549,7 +835,7 @@ class SecondBrainTests(unittest.TestCase):
                               self.sb("lint", str(source), exit_code=1, forbidden_reads=forbidden))
 
     def test_render_rejects_path_traversal(self):
-        outside = self.root / "render-payload.md"
+        outside = self.vault / "99_System/render-payload.md"
         outside.write_text("DO-NOT-PRINT-PAYLOAD", encoding="utf-8")
         for template in ("../../x", "..\\..\\x", "../render-payload", "..", "Daily/../Daily", "Daily\\Daily"):
             with self.subTest(template=template):

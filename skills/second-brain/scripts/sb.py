@@ -19,7 +19,7 @@
 
 볼트 위치: 환경변수 SECOND_BRAIN > ~/.second-brain/config.json의 "vault" 순서로 찾는다.
 config.json 선택 키: folders(종류별 폴더), exclude(열지 않을 폴더, 볼트 또는 Obsidian 루트 기준),
-  read_outside(backlinks·lint가 읽어도 되는 볼트 밖 폴더, 볼트 기준 "../폴더"), today_sources, utc_offset.
+  read_outside(backlinks·lint·render가 읽어도 되는 볼트 밖 폴더, 볼트 기준 "../폴더"), today_sources, utc_offset.
 개인 설정(config.json, local.md)은 ~/.second-brain/에 두어 Claude Code·Codex 설치가 함께 쓴다
 (환경변수 SECOND_BRAIN_HOME으로 위치를 바꿀 수 있다).
 """
@@ -46,6 +46,7 @@ _REAL_PATHS = {}
 
 
 def real_path(path, known=None):
+    """읽기 경계 비교용 키. 생성·저장·표시에는 display_path를 쓴다."""
     key = _norm(path)
     if key not in _REAL_PATHS:
         try:
@@ -55,7 +56,15 @@ def real_path(path, known=None):
     return _REAL_PATHS[key]
 
 
-SKILL_DIR = Path(real_path(__file__) or os.path.abspath(__file__)).parent.parent
+def display_path(path):
+    absolute = os.path.abspath(Path(path).expanduser())
+    try:
+        return Path(os.path.realpath(absolute))
+    except (OSError, RuntimeError):
+        return Path(absolute)
+
+
+SKILL_DIR = display_path(__file__).parent.parent
 STARTER = SKILL_DIR / "assets" / "starter-vault"
 HOME_DIR = Path(os.environ.get("SECOND_BRAIN_HOME") or Path.home() / ".second-brain").expanduser()
 CONFIG = HOME_DIR / "config.json"
@@ -118,6 +127,14 @@ def save_config(**kw):
 VAULT_FOR_EXCLUDE = None  # exclude 해석 기준(볼트). resolve_vault가 정한다.
 
 
+def check_vault_access(vault):
+    try:
+        with os.scandir(vault) as entries:
+            next(entries, None)
+    except OSError:
+        sys.exit(f"볼트 폴더를 읽을 수 없습니다: {vault}")
+
+
 def resolve_vault():
     global VAULT_FOR_EXCLUDE
     raw = os.environ.get("SECOND_BRAIN") or CFG.get("vault")
@@ -133,12 +150,13 @@ def resolve_vault():
     try:
         exists = vault.is_dir()
     except OSError:
-        exists = False
+        sys.exit(f"볼트 폴더를 읽을 수 없습니다: {vault}")
     if not exists:
         sys.exit(f"볼트 폴더가 없습니다: {vault}")
     VAULT_FOR_EXCLUDE = vault
     if excluded(vault, obsidian_root(vault), actual):
         sys.exit(f"제외된 볼트 폴더입니다(읽지 않음): {vault}")
+    check_vault_access(vault)
     return vault
 
 
@@ -206,11 +224,15 @@ def excluded(path, root, actual=None, names_only=False):
             if bad_parts(candidate[len(primary):]):
                 return True
             continue  # 볼트 이름과 볼트 위쪽 폴더 이름은 비밀 이름 검사 대상이 아니다.
+        matched = False
         for pair in roots[1:]:
             anchor = pair[index]
             if under(candidate, anchor):
+                matched = True
                 if bad_parts(os.path.basename(anchor) + candidate[len(anchor):]):
                     return True
+        if matched:
+            continue
         if names_only and under(candidate, metadata[index]):
             if bad_parts(candidate[len(metadata[index]):]):
                 return True
@@ -238,6 +260,9 @@ def walk_files(base, root, recursive=True, names_only=False, suffix=None):
         try:
             with os.scandir(folder) as entries:
                 for entry in entries:
+                    # Win32 경로에서 다른 이름으로 해석될 수 있는 항목은 열지 않는다.
+                    if os.name == "nt" and entry.name.endswith((".", " ")):
+                        continue
                     try:
                         directory = entry.is_dir(follow_symlinks=False)
                         if not directory and suffix:
@@ -247,7 +272,7 @@ def walk_files(base, root, recursive=True, names_only=False, suffix=None):
                         info = entry.stat(follow_symlinks=False)
                         linked = entry.is_symlink() or (os.name == "nt" and
                                  info.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT)
-                        if linked and (directory or names_only):
+                        if linked and directory:
                             continue
                         if not directory and not entry.is_file():
                             continue
@@ -256,6 +281,8 @@ def walk_files(base, root, recursive=True, names_only=False, suffix=None):
                     path = Path(entry.path)
                     # 비연결 항목은 검사한 부모의 실제 경로를 재사용한다.
                     actual = real_path(path, None if linked else os.path.join(actual_folder, entry.name))
+                    if linked and names_only and not readable(path, root, actual):
+                        continue
                     if actual is None or not readable(path, root, actual, names_only):
                         continue
                     if directory:
@@ -303,16 +330,25 @@ def render(vault, template_name, title):
     if any(part in template_name for part in ("/", "\\", "..")):
         sys.exit("템플릿 이름에 경로 구분자나 '..'를 쓸 수 없습니다.")
     path = vault / "99_System" / "Templates" / f"{template_name}.md"
-    if path.exists():
-        if not readable(path, obsidian_root(vault)):
-            sys.exit(f"제외된 템플릿 경로입니다(읽지 않음): {path}")
-        text = note_text(path)
-        if text is None:
-            sys.exit(f"템플릿을 읽을 수 없습니다: {path}")
-    elif template_name in BUILTIN:
-        text = BUILTIN[template_name]
-    else:
-        sys.exit(f"템플릿이 없습니다: {path}")
+    actual = real_path(path)
+    if actual is None:
+        sys.exit(f"템플릿의 실제 경로를 확인할 수 없습니다(읽지 않음): {path}")
+    root = obsidian_root(vault)
+    if excluded(path, root, actual) or SECRET_NAME.search(template_name):
+        sys.exit(f"제외된 템플릿 경로입니다(읽지 않음): {path}")
+    roots, _, _ = access_rules(vault)
+    if not any(under(actual, pair[1]) for pair in roots):
+        sys.exit(f"템플릿이 읽기 허용 범위 밖입니다: {path}\n"
+                 "공유 템플릿 폴더라면 config.json의 read_outside에 추가하세요.")
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        if template_name in BUILTIN:
+            text = BUILTIN[template_name]
+        else:
+            sys.exit(f"템플릿이 없습니다: {path}")
+    except OSError:
+        sys.exit(f"템플릿을 읽을 수 없습니다: {path}")
     current = now()
 
     def title_date():
@@ -426,12 +462,15 @@ def parse_date(text):
 def cmd_init(a):
     if not STARTER.is_dir():
         sys.exit(f"스타터 볼트가 없습니다: {STARTER}")
-    actual = real_path(Path(a.folder).expanduser())
-    if actual is None:
-        sys.exit(f"볼트 실제 경로를 확인할 수 없습니다: {a.folder}")
-    target = Path(actual)
-    if target.exists() and any(target.rglob("*.md")):
-        sys.exit(f"이미 노트가 있는 폴더입니다(덮어쓰지 않음): {target}\n기존 볼트를 쓰려면: python sb.py setup \"{target}\"")
+    target = display_path(a.folder)
+    try:
+        exists = target.exists()
+    except OSError:
+        sys.exit(f"볼트 폴더를 읽을 수 없습니다: {target}")
+    if exists:
+        check_vault_access(target)
+        if any(target.rglob("*.md")):
+            sys.exit(f"이미 노트가 있는 폴더입니다(덮어쓰지 않음): {target}\n기존 볼트를 쓰려면: python sb.py setup \"{target}\"")
     try:
         for d in FOLDERS:
             (target / d).mkdir(parents=True, exist_ok=True)
@@ -451,12 +490,14 @@ def cmd_init(a):
 
 
 def cmd_setup(a):
-    actual = real_path(Path(a.folder).expanduser())
-    if actual is None:
-        sys.exit(f"볼트 실제 경로를 확인할 수 없습니다: {a.folder}")
-    target = Path(actual)
-    if not target.is_dir():
+    target = display_path(a.folder)
+    try:
+        exists = target.is_dir()
+    except OSError:
+        sys.exit(f"볼트 폴더를 읽을 수 없습니다: {target}")
+    if not exists:
         sys.exit(f"폴더가 없습니다: {target}")
+    check_vault_access(target)
     save_config(vault=str(target))
     print(f"볼트 경로를 저장했습니다: {target}")
     warn_env()
@@ -648,7 +689,10 @@ def cmd_lint(a):
     for path in files:
         try:
             if not path.is_file():
-                missing.append(str(path))
+                if a.files:
+                    missing.append(str(path))
+                else:
+                    inaccessible.add(path)
         except OSError:
             inaccessible.add(path)
     if missing:
@@ -662,6 +706,9 @@ def cmd_lint(a):
     issues, checked = [], 0
     for p in files:
         rel = p.relative_to(vault).as_posix() if p.is_relative_to(vault) else str(p)
+        if p in inaccessible and not a.files:
+            print(f"{rel}\t읽을 수 없는 파일(건너뜀)")
+            continue
         if p in inaccessible or not readable(p, root):
             print(f"{rel}\t제외된 경로(읽지 않음)")
             continue

@@ -176,7 +176,7 @@ PARA(Tiago Forte의 분류법)에 영구 노트 폴더를 더한 구조다.
 
 테스트: 저장소 루트에서 `python -m unittest discover -s tests -v`를 실행한다(표준 라이브러리만 사용, macOS·Linux는 `python3`).
 
-성능 비교: `python tests/benchmark_sb.py`는 격리된 임시 볼트에 노트 2,000개와 첨부 1,000개를 만들어 main 기준·수정 전·현재 코드의 실행 시간을 JSON으로 출력한다.
+성능 비교: `python tests/benchmark_sb.py`는 격리된 임시 볼트에 노트 2,000개와 첨부 1,000개를 만들어 `origin/main`과 현재 작업 트리를 비교한다. 다른 버전은 `--refs REF worktree`로 지정하며, 결과 JSON의 임시 경로는 `<tmp>`로 표시한다.
 
 ## 라이선스
 

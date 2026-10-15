@@ -4,6 +4,7 @@ Each version uses the same temporary vault, settings, and command arguments.
 No existing vault/settings are accessed. Results include one warmup and medians.
 """
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -23,7 +24,23 @@ SKILL = Path("skills/second-brain")
 
 
 def git(*args):
-    return subprocess.check_output(["git", *args], cwd=REPO)
+    return subprocess.check_output(["git", *args], cwd=REPO, stderr=subprocess.PIPE)
+
+
+def redact_output(value, temporary):
+    pattern = r"[\\/]".join(re.escape(part) for part in re.split(r"[\\/]", str(temporary)))
+    return re.sub(pattern, "<tmp>", value, flags=re.IGNORECASE)
+
+
+def validate_refs(parser, refs):
+    for ref in refs:
+        if ref == "worktree":
+            continue
+        try:
+            git("rev-parse", "--verify", f"{ref}^{{commit}}")
+            git("cat-file", "-e", f"{ref}:{SKILL.as_posix()}/scripts/sb.py")
+        except (subprocess.CalledProcessError, OSError):
+            parser.error(f"Cannot benchmark ref {ref!r}; fetch it or choose existing refs with --refs REF worktree")
 
 
 def snapshot(ref, destination):
@@ -56,9 +73,9 @@ def run(script, args, fixture, env, capture=False):
         record = {"seconds": time.perf_counter() - start,
                   "returncode": result.returncode, "timeout": False}
         if capture:
-            record["stdout"] = result.stdout.decode("utf-8", errors="replace")
+            record["stdout"] = redact_output(result.stdout.decode("utf-8", errors="replace"), fixture)
         if result.stderr:
-            record["stderr"] = result.stderr.decode("utf-8", errors="replace")
+            record["stderr"] = redact_output(result.stderr.decode("utf-8", errors="replace"), fixture)
         return record
     except subprocess.TimeoutExpired:
         return {"seconds": time.perf_counter() - start,
@@ -84,12 +101,14 @@ def verify(command, warmup, vault):
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--refs", nargs="+", default=["c28e14d", "64ca76e", "worktree"])
+    parser.add_argument("--refs", nargs="+", default=["origin/main", "worktree"])
     parser.add_argument("--repeat", type=int, default=3)
     args = parser.parse_args()
     if args.repeat < 1:
         parser.error("--repeat must be positive")
-    report = {"python": sys.version, "platform": platform.platform(),
+    validate_refs(parser, args.refs)
+    report = {"started_at": datetime.now(timezone.utc).isoformat(),
+              "python": sys.version, "platform": platform.platform(),
               "repeat": args.repeat, "warmups": 1, "versions": []}
     with tempfile.TemporaryDirectory(prefix="sb-benchmark-") as temporary:
         root = Path(temporary)

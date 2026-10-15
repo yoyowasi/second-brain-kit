@@ -190,7 +190,7 @@ Dataview는 경로를 Obsidian 볼트 루트 기준으로 읽으므로, 스타�
 
 `config.json`의 `folders`로 폴더 이름을 바꿀 때도 같은 파일의 해당 폴더 경로를 고친다.
 
-같은 Obsidian 볼트 안의 볼트 밖 폴더(예: 세컨드 브레인 옆의 `업무 일지`)에 세컨드 브레인 노트를 가리키는 `[[링크]]`가 있다면, 노트 이름을 바꿀 때 그 링크도 찾을 수 있게 `config.json`의 `read_outside`에 그 폴더를 넣는다(예: `"read_outside": ["../업무 일지"]`). 그러면 `sb.py backlinks`가 그 폴더도 함께 읽고, 걸린 파일을 `볼트 밖(고치지 말고 보고)`으로 표시한다. `read_outside`에 넣지 않은 볼트 밖 파일은 `backlinks`가 읽지 않는다.
+같은 Obsidian 볼트 안의 볼트 밖 폴더(예: 세컨드 브레인 옆의 `업무 일지`)를 `backlinks`나 `lint`의 링크 확인에 포함하려면 `config.json`의 `read_outside`에 그 폴더를 넣는다(예: `"read_outside": ["../업무 일지"]`). 상위 Obsidian 폴더라는 이유만으로 자동 허용하지 않는다. `backlinks`의 `볼트 안`·`볼트 밖(고치지 말고 보고)` 표시는 파일의 실제 경로로 판단한다.
 
 ## 개인 설정: local.md와 config.json
 
@@ -268,9 +268,9 @@ mkdir -p ~/.second-brain
 | 키 | 뜻 |
 |---|---|
 | `vault` | 볼트 경로. Windows에서는 `/`를 써도 되고, `\`를 쓰려면 `\\`로 적는다 |
-| `folders` | 노트 종류별 폴더(볼트 기준). 종류: `daily`, `weekly`, `project`, `fix`, `resource`, `note`, `inbox`. 적지 않은 종류는 기본 폴더를 쓴다. `sb.py new`·`today`·`tasks`·`stale`에 적용되며, 최종 경로가 볼트 밖이면 거부한다(`../`, 외부 절대 경로, 볼트 밖을 가리키는 심볼릭 링크 포함) |
-| `exclude` | `sb.py`가 열지 않을 폴더·파일. 볼트 기준 경로와 Obsidian 볼트 루트 기준 경로를 둘 다 받고, 대소문자를 가리지 않는다. `lint`·`tags`·`backlinks`·`tasks`·`stale`와 `new`의 같은 이름 확인에서 빠진다 |
-| `read_outside` | `sb.py backlinks`가 볼트와 함께 읽을 볼트 밖 폴더(볼트 기준, 예: `"../업무 일지"`). 여기 없는 볼트 밖 파일은 `backlinks`가 읽지 않는다([볼트 루트가 더 위에 있을 때](#obsidian-볼트-루트가-더-위에-있을-때)) |
+| `folders` | 노트 종류별 폴더(볼트 기준). 종류: `daily`, `weekly`, `project`, `fix`, `resource`, `note`, `inbox`. 적지 않은 종류는 기본 폴더를 쓴다. `sb.py new`·`today`·`tasks`·`stale`에 적용되며, 실제 경로가 볼트 밖이거나 별칭·실제 경로가 제외 대상이면 거부한다 |
+| `exclude` | `sb.py`가 열지 않을 폴더·파일. 볼트 기준 경로와 Obsidian 볼트 루트 기준 경로를 둘 다 받고, Windows에서는 대소문자를 가리지 않는다. 별칭과 실제 경로를 모두 검사하며, 비밀 이름 폴더도 같은 방식으로 제외한다. `lint`·`tags`·`backlinks`·`tasks`·`stale`와 `new`의 같은 이름 확인에서 빠진다 |
+| `read_outside` | 읽기를 허용한 볼트 밖 폴더(볼트 기준, 예: `"../업무 일지"`). `backlinks` 검색, `lint`의 링크 확인과 명시한 파일 점검에 쓰인다. 여기 없는 외부 파일은 연결 폴더나 파일 별칭으로 접근해도 읽지 않는다([볼트 루트가 더 위에 있을 때](#obsidian-볼트-루트가-더-위에-있을-때)) |
 | `today_sources` | `sb.py today`가 같이 보여 줄 외부 원본 파일. `"이름": "경로 패턴"` |
 | `utc_offset` | UTC 기준 시차(시간). 기본 9(한국 시간). 오늘 날짜와 `created` 시각에 쓴다 |
 
@@ -278,6 +278,7 @@ mkdir -p ~/.second-brain
 
 - **`folders`를 바꾸면 볼트 쪽도 맞춘다.** 실제 폴더 이름, `AGENTS.md`의 폴더 표, Dataview 경로([고칠 파일 표](#obsidian-볼트-루트가-더-위에-있을-때))는 `sb.py`가 바꾸지 않는다. `daily`를 바꿔도 `weekly`는 따로 바꿔야 한다. 템플릿 폴더는 항상 `99_System/Templates`다.
 - **`exclude`는 `sb.py`만 막는다.** AI가 그 폴더를 열지 않게 하려면 `AGENTS.md`의 "열지 않을 곳"에도 같은 경로를 적는다. `.obsidian`, `.trash`, `.git`과 이름에 토큰·비번·비밀번호·password·passwd·token·secret·credential이 든 파일, `.env`·`.pem`·`.key` 파일은 설정과 관계없이 항상 건너뛴다.
+- **순회 중 발견한 연결 폴더는 따라가지 않는다.** 노트 조회·링크 점검·중복 확인은 symlink·junction을 건너뛴다. 볼트 자체나 `read_outside`에 직접 지정한 읽기 루트는 연결 경로여도 허용하지만, 실제 경로의 읽기 범위와 제외 규칙은 그대로 적용한다. `folders`로 직접 지정한 폴더 역시 별칭·실제 경로가 제외 대상이면 명령을 거부한다.
 - **`today_sources`의 경로 패턴**은 Obsidian 볼트 루트(보통 볼트 폴더) 기준이고, 날짜는 Python `strftime` 기호로 쓴다: `%Y`(연도 4자리), `%m`(월 2자리), `%d`(일 2자리). 위 예에서 10월 15일이면 `../업무 일지/1015.md`를 가리킨다. `read_outside`는 볼트 기준이므로, Obsidian 볼트 루트가 볼트보다 위에 있으면 같은 폴더라도 두 키에 적는 경로가 달라진다. AI는 이 파일을 내가 "오늘 노트에 업무 일지 붙여줘"처럼 요청하고 `AGENTS.md`가 읽기를 허용할 때만 읽는다.
 
 **확인**: `sb.py today`를 실행하면 설정이 반영된 경로가 보인다.
@@ -413,7 +414,7 @@ alias sb='python3 ~/.claude/skills/second-brain/scripts/sb.py'
 | `sb stale [--days 14]` | 파일 수정 시각 기준으로 N일 넘게 손대지 않은 `status: active` 프로젝트. 비밀 파일 이름과 `exclude` 경로는 건너뛴다 |
 | `sb tags` | frontmatter의 `tags`에 적은 태그와 개수(`99_System` 제외). 한 줄 목록(`['a', "b"]`)과 여러 줄 목록의 항목은 양끝의 같은 따옴표를 벗겨 집계한다. 본문의 `#태그`는 세지 않는다 |
 | `sb backlinks <노트 이름>` | 그 노트를 `[[링크]]`하는 파일. `.md` 확장자 유무와 대소문자를 구분하지 않는다. 볼트와 `config.json`의 `read_outside` 폴더만 읽고, 볼트 밖 파일은 "볼트 밖(고치지 말고 보고)"으로 표시한다 |
-| `sb lint [파일...]` | 형식 점검. 링크 존재 여부와 고아 노트 판정은 `.md` 확장자 유무와 대소문자를 구분하지 않는다. 파일을 주지 않으면 볼트 전체. 없는 파일을 주면 `파일 없음: <경로>`로 멈춘다 |
+| `sb lint [파일...]` | 형식 점검. 링크 존재 여부와 고아 노트 판정은 `.md` 확장자 유무와 대소문자를 구분하지 않는다. 파일을 주지 않으면 볼트 전체. 파일을 직접 지정해도 제외 대상이나 미허용 외부 경로면 읽지 않고 건너뛴다. 없는 파일을 주면 `파일 없음: <경로>`로 멈춘다 |
 
 `new`의 종류와 기본 폴더:
 

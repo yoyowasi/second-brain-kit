@@ -127,7 +127,7 @@ class SecondBrainTests(unittest.TestCase):
         (folder / "Unread.md").write_bytes(b"\xff")
         self.configure(folders={"project": "secret-projects"})
         for command in ("tasks", "stale"):
-            self.assertNotIn("Unread", self.sb(command))
+            self.assertNotIn("Unread", self.sb(command, exit_code=1))
 
     def test_outside_folders_rejected_by_all_consumers(self):
         outside = self.root / "outside"
@@ -194,11 +194,112 @@ class SecondBrainTests(unittest.TestCase):
 
     def test_linked_vault_resolves_links_in_obsidian_parent(self):
         obsidian, alias = self.linked_vault()
+        self.configure(read_outside=[".."])
         (obsidian / "Parent.md").write_text("# Parent\n", encoding="utf-8")
         note = alias / "00_Inbox/Root Link.md"
         note.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n[[Parent]]\n",
                         encoding="utf-8")
         self.assertIn("문제 0건", self.sb("lint", str(note)))
+
+    def test_unapproved_obsidian_parent_links_are_unresolved(self):
+        obsidian, alias = self.linked_vault()
+        (obsidian / "Parent.md").write_text("# Parent\n", encoding="utf-8")
+        note = alias / "00_Inbox/Root Link.md"
+        note.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n[[Parent]]\n",
+                        encoding="utf-8")
+        self.assertIn("깨진 링크 [[Parent]]", self.sb("lint", str(note), exit_code=1))
+
+    def test_excluded_directory_aliases_are_rejected(self):
+        (self.root / ".obsidian").mkdir()
+        for target_name, alias_name, exclusion in (
+                ("Hidden", "Alias", "Hidden"),
+                ("Hidden2", "Alias2", "vault/Hidden2"),
+                ("Hidden3", "Alias3", "Alias3"),
+                ("secrets", "Alias4", None)):
+            with self.subTest(target=target_name, exclusion=exclusion):
+                target = self.vault / target_name
+                target.mkdir()
+                self.directory_link(target, self.vault / alias_name)
+                note = target / "LinkedPayload.md"
+                note.write_text("---\ntype: project\nstatus: active\ntags: [blocked-tag]\n"
+                                "created: 2026-10-01T09:00\n---\n# LinkedPayload\n"
+                                "- [ ] blocked-task\n[[BlockedTarget]]\n", encoding="utf-8")
+                os.utime(note, (946684800, 946684800))
+                self.configure(exclude=[exclusion] if exclusion else [],
+                               folders={"project": alias_name})
+                for command in ("tasks", "stale"):
+                    output = self.sb(command, exit_code=1)
+                    self.assertNotIn("blocked-task", output)
+                    self.assertNotIn("[[LinkedPayload]]", output)
+                self.assertNotIn("blocked-tag", self.sb("tags"))
+                self.assertIn("백링크 없음", self.sb("backlinks", "BlockedTarget"))
+                self.assertIn("문제 0건", self.sb("lint"))
+                for explicit in (note, self.vault / alias_name / note.name):
+                    output = self.sb("lint", str(explicit))
+                    self.assertIn("점검(지정한 파일) 0개, 문제 0건", output)
+                # Keep every earlier target excluded during the next subtest.
+                note.unlink()
+
+    def test_external_junction_is_not_scanned_or_used_for_duplicates(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        link = self.vault / "20_Projects/Ext"
+        self.directory_link(outside, link)
+        note = outside / "ExternalPayload.md"
+        note.write_text("---\ntype: project\nstatus: active\ntags: [external-tag]\n"
+                        "created: 2026-10-01T09:00\n---\n# ExternalPayload\n"
+                        "- [ ] external-task\n[[ExternalTarget]]\n", encoding="utf-8")
+        os.utime(note, (946684800, 946684800))
+        for command in ("tasks", "stale"):
+            output = self.sb(command)
+            self.assertNotIn("ExternalPayload", output)
+            self.assertNotIn("external-task", output)
+        self.assertNotIn("external-tag", self.sb("tags"))
+        self.assertIn("백링크 없음", self.sb("backlinks", "ExternalTarget"))
+        self.assertIn("문제 0건", self.sb("lint"))
+        for explicit in (note, link / note.name):
+            self.assertIn("점검(지정한 파일) 0개, 문제 0건",
+                          self.sb("lint", str(explicit)))
+        self.configure(folders={"project": "20_Projects/Ext"})
+        for command in ("tasks", "stale"):
+            self.sb(command, exit_code=1)
+        self.configure(folders={})
+        self.sb("new", "inbox", "ExternalPayload")
+        self.assertTrue((self.vault / "00_Inbox/ExternalPayload.md").is_file())
+
+    def test_link_index_does_not_follow_unapproved_external_junction(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.directory_link(outside, self.vault / "Ext")
+        (outside / "ExternalTarget.md").write_text("# ExternalTarget\n", encoding="utf-8")
+        source = self.vault / "00_Inbox/Source.md"
+        source.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n"
+                          "[[ExternalTarget]]\n", encoding="utf-8")
+        self.assertIn("깨진 링크 [[ExternalTarget]]",
+                      self.sb("lint", str(source), exit_code=1))
+
+    def test_approved_outside_root_is_read_and_labeled_by_real_location(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        link = self.vault / "Ext"
+        self.directory_link(outside, link)
+        note = outside / "Allowed.md"
+        note.write_text("---\ntype: inbox\ncreated: 2026-10-01T09:00\n---\n"
+                        "[[Home]]\n", encoding="utf-8")
+        self.configure(read_outside=["Ext"])
+        output = self.sb("backlinks", "Home")
+        self.assertIn("Allowed.md\t볼트 밖", output)
+        self.assertNotIn("Allowed.md\t볼트 안", output)
+        self.assertIn("점검(지정한 파일) 1개, 문제 0건",
+                      self.sb("lint", str(link / note.name)))
+
+    def test_directory_loops_are_not_followed(self):
+        self.directory_link(self.vault, self.vault / "20_Projects/Loop")
+        for command in (("tasks",), ("stale",), ("tags",),
+                        ("backlinks", "Missing"), ("lint",)):
+            self.sb(*command)
+        self.sb("new", "inbox", "Loop Safe")
+        self.assertTrue((self.vault / "00_Inbox/Loop Safe.md").is_file())
 
     def test_normalized_inside_folder_still_works(self):
         self.configure(folders={"inbox": "00_Inbox/../Custom"})

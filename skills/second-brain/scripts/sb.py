@@ -19,7 +19,7 @@
 
 볼트 위치: 환경변수 SECOND_BRAIN > ~/.second-brain/config.json의 "vault" 순서로 찾는다.
 config.json 선택 키: folders(종류별 폴더), exclude(열지 않을 폴더, 볼트 또는 Obsidian 루트 기준),
-  read_outside(backlinks가 함께 훑을 볼트 밖 폴더, 볼트 기준 "../폴더"), today_sources, utc_offset.
+  read_outside(backlinks·lint가 읽어도 되는 볼트 밖 폴더, 볼트 기준 "../폴더"), today_sources, utc_offset.
 개인 설정(config.json, local.md)은 ~/.second-brain/에 두어 Claude Code·Codex 설치가 함께 쓴다
 (환경변수 SECOND_BRAIN_HOME으로 위치를 바꿀 수 있다).
 """
@@ -30,6 +30,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -127,18 +128,64 @@ def _norm(p):
     return os.path.normcase(os.path.abspath(p))
 
 
+def relative_path(path, root):
+    try:
+        return Path(os.path.relpath(path, root))
+    except ValueError:  # 서로 다른 Windows 드라이브
+        return path
+
+
 def excluded(path, root):
-    rel = Path(os.path.relpath(path, root))  # read_outside 폴더는 root 밖일 수 있다
-    dirs = [d for d in rel.parts[:-1] if d != ".."]
-    if any(d in SKIP_DIRS or SECRET_WORD.search(d) for d in dirs) or SECRET_NAME.search(path.name):
-        return True
-    full = _norm(path)
-    for x in CFG.get("exclude", []):
-        for base in {root, VAULT_FOR_EXCLUDE or root, obsidian_root(VAULT_FOR_EXCLUDE or root)}:
-            ex = _norm(Path(base) / x)
-            if full == ex or full.startswith(ex + os.sep):
+    vault = VAULT_FOR_EXCLUDE or root
+    bases = {root, vault, obsidian_root(vault)}
+    actual = path.resolve()
+    for base in bases:
+        for candidate, anchor in ((path, base), (actual, base.resolve())):
+            rel = relative_path(candidate, anchor)
+            dirs = [d for d in rel.parts[:-1] if d != ".."]
+            if (any(d in SKIP_DIRS or SECRET_WORD.search(d) for d in dirs)
+                    or candidate.name in SKIP_DIRS or SECRET_NAME.search(candidate.name)):
                 return True
+    full = {_norm(path), _norm(actual)}
+    for x in CFG.get("exclude", []):
+        for base in bases:
+            ex = base / x
+            for boundary in {_norm(ex), _norm(ex.resolve())}:
+                if any(p == boundary or p.startswith(boundary + os.sep) for p in full):
+                    return True
     return False
+
+
+def read_roots(vault):
+    return [vault] + [Path(os.path.abspath(vault / x)) for x in CFG.get("read_outside", [])]
+
+
+def readable(path, root):
+    vault = VAULT_FOR_EXCLUDE or root
+    actual = path.resolve()
+    return (any(actual.is_relative_to(base.resolve()) for base in read_roots(vault))
+            and not excluded(path, root))
+
+
+def walk_files(base, root, recursive=True):
+    if not readable(base, root):
+        return
+    # 명시한 볼트·읽기 루트의 별칭은 유지하되, 순회 중 만난 연결 폴더는 따르지 않는다.
+    for current, dirs, files in os.walk(base, followlinks=False):
+        folder = Path(current)
+        kept = []
+        if recursive:
+            for name in dirs:
+                child = folder / name
+                junction = (os.name == "nt"
+                            and child.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT)
+                if not child.is_symlink() and not junction and readable(child, root):
+                    kept.append(name)
+        dirs[:] = kept
+        for name in files:
+            path = folder / name
+            if readable(path, root) and path.is_file():
+                yield path
 
 
 def now():
@@ -229,8 +276,8 @@ def frontmatter(text):
 
 
 def notes(vault):
-    for p in vault.rglob("*.md"):
-        if not excluded(p, vault):
+    for p in walk_files(vault, obsidian_root(vault)):
+        if p.suffix.casefold() == ".md":
             yield p
 
 
@@ -248,13 +295,12 @@ def links_of(text):
 def link_index(root):
     """Obsidian 방식: 파일 이름(확장자 제외) 또는 볼트 루트 기준 경로로 해석."""
     names, paths = set(), set()
-    for p in root.rglob("*"):
-        if not p.is_file() or excluded(p, root):
-            continue
-        rel = p.relative_to(root)
-        stem = normalized_link(rel.as_posix())
-        names.add(Path(stem).name)
-        paths.add(stem)
+    for base in read_roots(VAULT_FOR_EXCLUDE or root):
+        for p in walk_files(base, root):
+            rel = relative_path(p, root)
+            stem = normalized_link(rel.as_posix())
+            names.add(Path(stem).name)
+            paths.add(stem)
     return names, paths
 
 
@@ -267,6 +313,8 @@ def folder_of(vault, kind):
     folder = Path(os.path.abspath(vault / CFG.get("folders", {}).get(kind, KINDS[kind][1])))
     if not folder.resolve().is_relative_to(vault.resolve()):
         sys.exit(f"노트 폴더는 볼트 안이어야 합니다: {kind} → {folder}")
+    if excluded(folder, obsidian_root(vault)):
+        sys.exit(f"제외된 노트 폴더입니다: {kind} → {folder}")
     return folder
 
 
@@ -396,8 +444,8 @@ def cmd_tasks(a):
     root = obsidian_root(vault)
     today = now().date()
     rows = []
-    for p in sorted(folder_of(vault, "daily").glob("*.md")):
-        if excluded(p, root):
+    for p in sorted(walk_files(folder_of(vault, "daily"), root, recursive=False)):
+        if p.suffix.casefold() != ".md":
             continue
         try:
             d = dt.date.fromisoformat(p.stem)
@@ -407,8 +455,8 @@ def cmd_tasks(a):
             m = OPEN_TASK.match(line)
             if m:
                 rows.append(((today - d).days, p.stem, m[1]))
-    for p in sorted(folder_of(vault, "project").glob("*.md")):
-        if excluded(p, root):
+    for p in sorted(walk_files(folder_of(vault, "project"), root, recursive=False)):
+        if p.suffix.casefold() != ".md":
             continue
         text = p.read_text(encoding="utf-8")
         if (frontmatter(text) or {}).get("status") != "active":
@@ -429,8 +477,8 @@ def cmd_stale(a):
     root = obsidian_root(vault)
     limit = now() - dt.timedelta(days=a.days)
     found = False
-    for p in sorted(folder_of(vault, "project").glob("*.md")):
-        if excluded(p, root):
+    for p in sorted(walk_files(folder_of(vault, "project"), root, recursive=False)):
+        if p.suffix.casefold() != ".md":
             continue
         if (frontmatter(p.read_text(encoding="utf-8")) or {}).get("status") != "active":
             continue
@@ -468,16 +516,15 @@ def cmd_backlinks(a):
     root = obsidian_root(vault)
     name = normalized_link(a.name)
     hits = []
-    outside = [Path(os.path.abspath(vault / x)) for x in CFG.get("read_outside", [])]  # 볼트 밖은 허용한 폴더만
-    scan = [vault] + [d for d in outside if d.is_dir()]
-    candidates = {p for base in scan for p in base.rglob("*.md") if not excluded(p, root)}
+    candidates = {p for base in read_roots(vault) for p in walk_files(base, root)
+                  if p.suffix.casefold() == ".md"}
     for p in sorted(candidates):
         targets = [normalized_link(t) for t in links_of(p.read_text(encoding="utf-8", errors="replace"))]
         if any(t == name or t.endswith("/" + name) for t in targets):
             hits.append(p)
     for p in hits:
-        where = "볼트 안" if p.is_relative_to(vault) else "볼트 밖(고치지 말고 보고)"
-        print(f"{Path(os.path.relpath(p, root)).as_posix()}\t{where}")
+        where = "볼트 안" if p.resolve().is_relative_to(vault.resolve()) else "볼트 밖(고치지 말고 보고)"
+        print(f"{relative_path(p, root).as_posix()}\t{where}")
     if not hits:
         print("백링크 없음")
 
@@ -497,7 +544,7 @@ def cmd_lint(a):
     issues, checked = [], 0
     for p in files:
         rel = p.relative_to(vault).as_posix() if p.is_relative_to(vault) else str(p)
-        if p.is_relative_to(root) and excluded(p, root):
+        if not readable(p, root):
             print(f"{rel}\t제외된 경로(읽지 않음)")
             continue
         if rel.startswith("99_System/") or p.name in {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}:

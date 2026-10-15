@@ -268,8 +268,8 @@ mkdir -p ~/.second-brain
 | 키 | 뜻 |
 |---|---|
 | `vault` | 볼트 경로. Windows에서는 `/`를 써도 되고, `\`를 쓰려면 `\\`로 적는다 |
-| `folders` | 노트 종류별 폴더(볼트 기준). 종류: `daily`, `weekly`, `project`, `fix`, `resource`, `note`, `inbox`. 적지 않은 종류는 기본 폴더를 쓴다. `sb.py new`·`today`·`tasks`·`stale`에 적용된다 |
-| `exclude` | `sb.py`가 열지 않을 폴더·파일. 볼트 기준 경로와 Obsidian 볼트 루트 기준 경로를 둘 다 받고, 대소문자를 가리지 않는다. `lint`·`tags`·`backlinks`와 `new`의 같은 이름 확인에서 빠진다 |
+| `folders` | 노트 종류별 폴더(볼트 기준). 종류: `daily`, `weekly`, `project`, `fix`, `resource`, `note`, `inbox`. 적지 않은 종류는 기본 폴더를 쓴다. `sb.py new`·`today`·`tasks`·`stale`에 적용되며, 최종 경로가 볼트 밖이면 거부한다(`../`, 외부 절대 경로, 볼트 밖을 가리키는 심볼릭 링크 포함) |
+| `exclude` | `sb.py`가 열지 않을 폴더·파일. 볼트 기준 경로와 Obsidian 볼트 루트 기준 경로를 둘 다 받고, 대소문자를 가리지 않는다. `lint`·`tags`·`backlinks`·`tasks`·`stale`와 `new`의 같은 이름 확인에서 빠진다 |
 | `read_outside` | `sb.py backlinks`가 볼트와 함께 읽을 볼트 밖 폴더(볼트 기준, 예: `"../업무 일지"`). 여기 없는 볼트 밖 파일은 `backlinks`가 읽지 않는다([볼트 루트가 더 위에 있을 때](#obsidian-볼트-루트가-더-위에-있을-때)) |
 | `today_sources` | `sb.py today`가 같이 보여 줄 외부 원본 파일. `"이름": "경로 패턴"` |
 | `utc_offset` | UTC 기준 시차(시간). 기본 9(한국 시간). 오늘 날짜와 `created` 시각에 쓴다 |
@@ -306,7 +306,7 @@ weekly: C:\Notes\SecondBrain\10_Daily\Weekly\2026-W42.md  exists=False
 | "메모해 둬: ○○" | `sb new inbox "<짧은 제목>"`으로 만들고 한 말을 그대로 적는다. 분류는 하지 않는다 | `00_Inbox/` |
 | "인박스 정리해줘" | 메모를 하나씩 읽고 분류 질문으로 옮긴다(지우고 새로 만들지 않고 이동). `type`·`area`·`tags`를 채우고 링크한다. 섞인 메모는 나누고, 같은 주제 노트가 있으면 합친다. 여러 노트로 나누거나 기존 노트에 합친 원본은 `90_Archive/`로 옮긴다. 애매하면 인박스에 두고 이유를 말한다 | "원래 이름 → 위치" 표 |
 | "주간 리뷰 해줘" | `sb today`의 `iso_week`·`start`·`end`로 기간을 정한다 → 그 주 일일 노트·새 노트·진행 중 프로젝트를 읽는다 → `sb new weekly`(이미 있으면 빈 절만 채움) → 한 일·배운 것·막힌 것·다음 주 우선순위 3개 → `sb stale`로 2주 넘게 손대지 않은 프로젝트를 알린다(상태는 내가 정한다) | `10_Daily/Weekly/YYYY-Www.md` |
-| "이거 해결 기록 남겨줘" | 같은 증상의 기록이 있는지 먼저 찾는다 → 없으면 `sb new fix "<증상 한 줄>"`, 있으면 그 노트에 사례 추가 → 현상·원인(확인/추정 구분)·변경·검증(어디까지 확인했는지)·출처. 제목에 비밀 파일 단어가 있으면 `sb new`가 거부하므로 다른 말로 짓는다(아래 주의) | `40_Resources/해결 기록/` |
+| "이거 해결 기록 남겨줘" | 증상과 원인 기제가 같은 기록이 있는지 먼저 찾는다 → 있으면 그 노트에 사례 추가, 없으면 `sb new fix "<증상 한 줄>"`. 증상이 비슷해도 원인이 다르면 새 노트를 만들고 서로 링크한다 → 현상·원인(확인/추정 구분)·변경·검증(어디까지 확인했는지)·출처. 제목에 비밀 파일 단어가 있으면 `sb new`가 거부하므로 다른 말로 짓는다(아래 주의) | `40_Resources/해결 기록/` |
 | "참고 자료로 정리해줘" | `sb new resource "<주제>"` → 내 말로 요약, 원본 링크. 같은 주제가 있으면 합친다 | `40_Resources/참고 자료/` |
 | "[[노트]]에서 노트 정제해줘" | 다시 쓸 생각 하나당 `sb new note "<한 문장 주장>"` → 본문 3~10줄, 출처 링크 필수, 추측은 `> 추측:` | `50_Notes/` |
 | "볼트에서 ○○ 노트를 90_Archive로 옮겨줘" | 지우지 않고 `90_Archive/`로 옮긴다(옮기기만 하면 이름이 그대로라 링크는 깨지지 않는다). 이름까지 바꾸면 `sb backlinks "<옛 이름>"`으로 찾아 볼트 안 링크만 고친다 | `90_Archive/` |
@@ -409,10 +409,10 @@ alias sb='python3 ~/.claude/skills/second-brain/scripts/sb.py'
 | `sb today [--date YYYY-MM-DD]` | 날짜와 요일, 현재 시각, ISO 주차와 그 주 월~일, 어제·내일 날짜(`prev`·`next`), 일일·주간 노트 경로와 존재 여부, `today_sources`. 날짜 형식이 틀리면 `날짜는 YYYY-MM-DD 형식이어야 합니다: <값>`으로 멈춘다 |
 | `sb render <템플릿> [--title T]` | 템플릿의 Templater 구문을 실제 값으로 바꾼 본문을 출력한다(파일은 쓰지 않는다). 템플릿 이름: `Daily`(제목은 `YYYY-MM-DD`), `Weekly`(제목은 `YYYY-Www`), `Project`, `Fix`, `Resource`, `Note`, `Inbox` |
 | `sb new <종류> [제목] [--date D] [--dry-run]` | 템플릿으로 새 노트를 만든다. `daily`·`weekly`는 제목을 생략하면 오늘(또는 `--date`) 기준으로 정한다. 나머지는 제목이 필요하다(공백만 있으면 `제목이 필요합니다.`). 볼트 어디든 같은 이름(대소문자 무시)이 있거나, 제목에 금지 문자나 비밀 파일 단어가 있으면 거부한다(아래). 경로가 너무 길어 파일을 만들지 못하면 제목을 줄이거나 볼트를 더 짧은 경로로 옮기라고 안내한다. `--dry-run`은 경로와 내용만 출력한다 |
-| `sb tasks [--older N]` | 일일 노트와 `status: active` 프로젝트의 미완료 `- [ ]` 할 일. `--older N`은 N일보다 오래된 일일 노트 항목만 |
-| `sb stale [--days 14]` | 파일 수정 시각 기준으로 N일 넘게 손대지 않은 `status: active` 프로젝트 |
+| `sb tasks [--older N]` | 일일 노트와 `status: active` 프로젝트의 미완료 `- [ ]` 할 일. 비밀 파일 이름과 `exclude` 경로는 건너뛴다. `--older N`은 N일보다 오래된 일일 노트 항목만 |
+| `sb stale [--days 14]` | 파일 수정 시각 기준으로 N일 넘게 손대지 않은 `status: active` 프로젝트. 비밀 파일 이름과 `exclude` 경로는 건너뛴다 |
 | `sb tags` | frontmatter의 `tags`에 적은 태그와 개수(`99_System` 제외). 본문의 `#태그`는 세지 않는다 |
-| `sb backlinks <노트 이름>` | 그 노트를 `[[링크]]`하는 파일. 볼트와 `config.json`의 `read_outside` 폴더만 읽고, 볼트 밖 파일은 "볼트 밖(고치지 말고 보고)"으로 표시한다 |
+| `sb backlinks <노트 이름>` | 그 노트를 `[[링크]]`하는 파일. `.md` 확장자 유무와 대소문자를 구분하지 않는다. 볼트와 `config.json`의 `read_outside` 폴더만 읽고, 볼트 밖 파일은 "볼트 밖(고치지 말고 보고)"으로 표시한다 |
 | `sb lint [파일...]` | 형식 점검. 파일을 주지 않으면 볼트 전체. 없는 파일을 주면 `파일 없음: <경로>`로 멈춘다 |
 
 `new`의 종류와 기본 폴더:

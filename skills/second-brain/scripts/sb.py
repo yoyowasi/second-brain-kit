@@ -107,7 +107,7 @@ def resolve_vault():
         sys.exit("볼트 경로가 설정되지 않았습니다.\n"
                  f'  새로 만들기: python "{me}" init <폴더>\n'
                  f'  기존 볼트:   python "{me}" setup <폴더>   (또는 환경변수 SECOND_BRAIN)')
-    vault = Path(raw).expanduser()
+    vault = Path(raw).expanduser().resolve()
     if not vault.is_dir():
         sys.exit(f"볼트 폴더가 없습니다: {vault}")
     VAULT_FOR_EXCLUDE = vault
@@ -204,6 +204,13 @@ def render(vault, template_name, title):
     return out
 
 
+def unquote(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
+        return value[1:-1]
+    return value
+
+
 def frontmatter(text):
     m = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n", text, re.S)
     if not m:
@@ -214,10 +221,10 @@ def frontmatter(text):
         item = re.match(r"^\s+-\s+(.+)$", line)
         if kv:
             key = kv[1]
-            fm[key] = kv[2].strip().strip('"')
+            fm[key] = unquote(kv[2])
         elif item and key:  # YAML 목록(tags 등)
             prev = fm.get(key)
-            fm[key] = (prev if isinstance(prev, list) else []) + [item[1].strip().strip('"')]
+            fm[key] = (prev if isinstance(prev, list) else []) + [unquote(item[1])]
     return fm
 
 
@@ -256,8 +263,11 @@ def resolves(target, names, paths):
     return t in names or t in paths or any(x.endswith("/" + t) for x in paths)
 
 
-def folder_of(kind):
-    return CFG.get("folders", {}).get(kind, KINDS[kind][1])
+def folder_of(vault, kind):
+    folder = (vault / CFG.get("folders", {}).get(kind, KINDS[kind][1])).resolve()
+    if not folder.is_relative_to(vault.resolve()):
+        sys.exit(f"노트 폴더는 볼트 안이어야 합니다: {kind} → {folder}")
+    return folder
 
 
 def warn_env():
@@ -326,8 +336,8 @@ def cmd_today(a):
     vault = resolve_vault()
     d = parse_date(a.date) if a.date else now().date()
     week, monday, sunday = iso_week(d)
-    daily = vault / folder_of("daily") / f"{d}.md"
-    weekly = vault / folder_of("weekly") / f"{week}.md"
+    daily = folder_of(vault, "daily") / f"{d}.md"
+    weekly = folder_of(vault, "weekly") / f"{week}.md"
     print(f"date: {d} ({'월화수목금토일'[d.weekday()]})")
     print(f"now: {now():%Y-%m-%dT%H:%M}")
     print(f"iso_week: {week}  start: {monday}  end: {sunday}")
@@ -361,7 +371,7 @@ def cmd_new(a):
         sys.exit(f'제목에 / \\ : * ? " < > | # ^ [ ] 를 쓸 수 없습니다(파일 이름·링크가 깨짐): {title}')
     if SECRET_NAME.search(title):
         sys.exit(f"제목에 비밀 파일로 보이는 단어가 있어 검색·점검에서 빠집니다. 다른 말로 바꾸세요(예: 토큰 → 인증): {title}")
-    target = vault / folder_of(a.kind) / f"{title}.md"
+    target = folder_of(vault, a.kind) / f"{title}.md"
     same = [p for p in notes(vault) if p.stem.casefold() == title.casefold()]  # Obsidian 링크는 대소문자를 가리지 않는다
     if target.exists() or same:
         sys.exit(f"이미 있습니다(덮어쓰지 않음): {(same or [target])[0]}")
@@ -383,9 +393,12 @@ OPEN_TASK = re.compile(r"^\s*- \[ \]\s*(\S.*)$")
 
 def cmd_tasks(a):
     vault = resolve_vault()
+    root = obsidian_root(vault)
     today = now().date()
     rows = []
-    for p in sorted((vault / folder_of("daily")).glob("*.md")):
+    for p in sorted(folder_of(vault, "daily").glob("*.md")):
+        if excluded(p, root):
+            continue
         try:
             d = dt.date.fromisoformat(p.stem)
         except ValueError:
@@ -394,7 +407,9 @@ def cmd_tasks(a):
             m = OPEN_TASK.match(line)
             if m:
                 rows.append(((today - d).days, p.stem, m[1]))
-    for p in sorted((vault / folder_of("project")).glob("*.md")):
+    for p in sorted(folder_of(vault, "project").glob("*.md")):
+        if excluded(p, root):
+            continue
         text = p.read_text(encoding="utf-8")
         if (frontmatter(text) or {}).get("status") != "active":
             continue
@@ -411,9 +426,12 @@ def cmd_tasks(a):
 
 def cmd_stale(a):
     vault = resolve_vault()
+    root = obsidian_root(vault)
     limit = now() - dt.timedelta(days=a.days)
     found = False
-    for p in sorted((vault / folder_of("project")).glob("*.md")):
+    for p in sorted(folder_of(vault, "project").glob("*.md")):
+        if excluded(p, root):
+            continue
         if (frontmatter(p.read_text(encoding="utf-8")) or {}).get("status") != "active":
             continue
         mtime = dt.datetime.fromtimestamp(p.stat().st_mtime, KST)  # updated보다 파일 수정 시각이 정확하다
@@ -440,16 +458,21 @@ def cmd_tags(a):
         print("태그 없음")
 
 
+def normalized_link(target):
+    target = target.casefold()
+    return target[:-3] if target.endswith(".md") else target
+
+
 def cmd_backlinks(a):
     vault = resolve_vault()
     root = obsidian_root(vault)
-    name = a.name[:-3] if a.name.endswith(".md") else a.name
+    name = normalized_link(a.name)
     hits = []
     outside = [Path(os.path.abspath(vault / x)) for x in CFG.get("read_outside", [])]  # 볼트 밖은 허용한 폴더만
     scan = [vault] + [d for d in outside if d.is_dir()]
     candidates = {p for base in scan for p in base.rglob("*.md") if not excluded(p, root)}
     for p in sorted(candidates):
-        targets = links_of(p.read_text(encoding="utf-8", errors="replace"))
+        targets = [normalized_link(t) for t in links_of(p.read_text(encoding="utf-8", errors="replace"))]
         if any(t == name or t.endswith("/" + name) for t in targets):
             hits.append(p)
     for p in hits:

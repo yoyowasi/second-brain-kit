@@ -156,7 +156,7 @@ PARA(Tiago Forte의 분류법)에 영구 노트 폴더를 더한 구조다.
 - **노트 제목에 비밀 파일 단어를 쓰지 않는다.** 이름에 토큰·비번·비밀번호·password·passwd·token·secret·credential이 든 파일은 비밀정보가 들었을 수 있어 AI와 `sb.py`가 열지 않고 건너뛴다. 그래서 `sb new`는 이런 단어가 든 제목을 거부하고 다른 말을 쓰라고 알려 준다(예: `토큰` → `인증`). 영어 단어는 단어 단위로 본다(`API token`은 거부, `Tokenizer`는 통과). 한국어는 글자가 붙어 있어도 걸린다(`토큰화`도 거부).
 - **백업 저장소는 private으로.** 볼트를 git으로 백업하면 쓴 내용이 그대로 원격으로 나간다. 볼트 백업 저장소는 반드시 private으로 만들고, 공개 저장소인 이 키트와 섞지 않는다.
 - **노트는 지우지 않고 보관한다.** 필요 없어진 노트는 `90_Archive/`로 옮긴다. `sb new`는 같은 이름의 노트가 볼트 어디에든 있으면 만들지 않는다(덮어쓰기 없음). 대소문자만 다른 이름도 같은 이름으로 본다.
-- **AI는 볼트 안에서만 쓴다.** 볼트 밖 폴더는 내가 허용하고 지정할 때만 읽는다. `sb.py backlinks`도 `config.json`의 `read_outside`에 넣은 볼트 밖 폴더만 함께 읽는다. 볼트의 git commit·push는 내가 요청할 때만 한다.
+- **AI는 볼트 안에서만 쓴다.** 볼트 밖 폴더의 내용은 내가 허용하고 지정할 때만 읽는다. `sb.py`는 내용 읽기를 볼트와 `read_outside`로 제한하며, `lint`의 링크 확인에는 상위 Obsidian 노트의 이름만 색인한다. 순회 중 연결 폴더는 건너뛰고 제외 규칙은 별칭·실제 경로에 모두 적용한다. 하드링크·bind mount는 경로로 구분할 수 없어 차단 범위 밖이다. 볼트의 git commit·push는 내가 요청할 때만 한다.
 - **개인 설정은 저장소 밖에 둔다.** `config.json`(볼트 경로)과 `local.md`(개인 설정)는 `~/.second-brain/`에 있고 Claude Code·Codex 설치가 함께 쓴다. 이 키트 저장소의 `.gitignore`는 실수로 저장소 안에 만든 `config.json`·`local.md`와 `.claude/`·`.obsidian/`·`.trash/`·`.env*`·`*.pem`·`*.key`·`*.log`가 올라가지 않게 막는다. 볼트를 git으로 백업할 때는 볼트 저장소의 `.gitignore`를 따로 만든다.
 
 ## 저장소 구성
@@ -175,6 +175,8 @@ PARA(Tiago Forte의 분류법)에 영구 노트 폴더를 더한 구조다.
 | `LICENSE` | MIT 라이선스 |
 
 테스트: 저장소 루트에서 `python -m unittest discover -s tests -v`를 실행한다(표준 라이브러리만 사용, macOS·Linux는 `python3`).
+
+성능 비교: `python tests/benchmark_sb.py`는 격리된 임시 볼트에 노트 2,000개와 첨부 1,000개를 만들어 `origin/main`과 현재 작업 트리를 비교한다. 다른 버전은 `--refs REF worktree`로 지정하며, 결과 JSON의 임시 경로는 `<tmp>`로 표시한다.
 
 ## 라이선스
 

@@ -19,7 +19,7 @@
 
 볼트 위치: 환경변수 SECOND_BRAIN > ~/.second-brain/config.json의 "vault" 순서로 찾는다.
 config.json 선택 키: folders(종류별 폴더), exclude(열지 않을 폴더, 볼트 또는 Obsidian 루트 기준),
-  read_outside(backlinks가 함께 훑을 볼트 밖 폴더, 볼트 기준 "../폴더"), today_sources, utc_offset.
+  read_outside(backlinks·lint·render가 읽어도 되는 볼트 밖 폴더, 볼트 기준 "../폴더"), today_sources, utc_offset.
 개인 설정(config.json, local.md)은 ~/.second-brain/에 두어 Claude Code·Codex 설치가 함께 쓴다
 (환경변수 SECOND_BRAIN_HOME으로 위치를 바꿀 수 있다).
 """
@@ -30,13 +30,41 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
 for stream in (sys.stdout, sys.stderr):
     stream.reconfigure(encoding="utf-8")
 
-SKILL_DIR = Path(__file__).resolve().parent.parent
+
+def _norm(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+_REAL_PATHS = {}
+
+
+def real_path(path, known=None):
+    """읽기 경계 비교용 키. 생성·저장·표시에는 display_path를 쓴다."""
+    key = _norm(path)
+    if key not in _REAL_PATHS:
+        try:
+            _REAL_PATHS[key] = os.path.normcase(known) if known is not None else _norm(os.path.realpath(key))
+        except (OSError, RuntimeError):
+            _REAL_PATHS[key] = None
+    return _REAL_PATHS[key]
+
+
+def display_path(path):
+    absolute = os.path.abspath(Path(path).expanduser())
+    try:
+        return Path(os.path.realpath(absolute))
+    except (OSError, RuntimeError):
+        return Path(absolute)
+
+
+SKILL_DIR = display_path(__file__).parent.parent
 STARTER = SKILL_DIR / "assets" / "starter-vault"
 HOME_DIR = Path(os.environ.get("SECOND_BRAIN_HOME") or Path.home() / ".second-brain").expanduser()
 CONFIG = HOME_DIR / "config.json"
@@ -99,18 +127,36 @@ def save_config(**kw):
 VAULT_FOR_EXCLUDE = None  # exclude 해석 기준(볼트). resolve_vault가 정한다.
 
 
+def check_vault_access(vault):
+    try:
+        with os.scandir(vault) as entries:
+            next(entries, None)
+    except OSError:
+        sys.exit(f"볼트 폴더를 읽을 수 없습니다: {vault}")
+
+
 def resolve_vault():
     global VAULT_FOR_EXCLUDE
     raw = os.environ.get("SECOND_BRAIN") or CFG.get("vault")
     if not raw:
-        me = Path(__file__).resolve()
+        me = Path(os.path.abspath(__file__))
         sys.exit("볼트 경로가 설정되지 않았습니다.\n"
                  f'  새로 만들기: python "{me}" init <폴더>\n'
                  f'  기존 볼트:   python "{me}" setup <폴더>   (또는 환경변수 SECOND_BRAIN)')
     vault = Path(os.path.abspath(Path(raw).expanduser()))
-    if not vault.is_dir():
+    actual = real_path(vault)
+    if actual is None:
+        sys.exit(f"볼트 실제 경로를 확인할 수 없습니다(읽지 않음): {vault}")
+    try:
+        exists = vault.is_dir()
+    except OSError:
+        sys.exit(f"볼트 폴더를 읽을 수 없습니다: {vault}")
+    if not exists:
         sys.exit(f"볼트 폴더가 없습니다: {vault}")
     VAULT_FOR_EXCLUDE = vault
+    if excluded(vault, obsidian_root(vault), actual):
+        sys.exit(f"제외된 볼트 폴더입니다(읽지 않음): {vault}")
+    check_vault_access(vault)
     return vault
 
 
@@ -118,27 +164,141 @@ def resolve_vault():
 def obsidian_root(vault):
     """[[경로/링크]]의 기준인 Obsidian 볼트 루트: .obsidian이 있는 가장 가까운 상위 폴더."""
     for p in [vault, *vault.parents]:
-        if (p / ".obsidian").is_dir():
-            return p
+        try:
+            if (p / ".obsidian").is_dir():
+                return p
+        except OSError:
+            continue
     return vault
 
 
-def _norm(p):
-    return os.path.normcase(os.path.abspath(p))
+def under(path, root):
+    return root is not None and (path == root or path.startswith(root.rstrip(os.sep) + os.sep))
 
 
-def excluded(path, root):
-    rel = Path(os.path.relpath(path, root))  # read_outside 폴더는 root 밖일 수 있다
-    dirs = [d for d in rel.parts[:-1] if d != ".."]
-    if any(d in SKIP_DIRS or SECRET_WORD.search(d) for d in dirs) or SECRET_NAME.search(path.name):
+def relative_path(path, root):
+    try:
+        return Path(os.path.relpath(path, root))
+    except ValueError:  # 서로 다른 Windows 드라이브
+        return path
+
+
+@functools.lru_cache(maxsize=None)
+def read_roots(vault):
+    return (vault, *(Path(os.path.abspath(vault / x)) for x in CFG.get("read_outside", [])))
+
+
+@functools.lru_cache(maxsize=None)
+def access_rules(vault):
+    obsidian = obsidian_root(vault)
+    roots = tuple((_norm(p), real_path(p)) for p in read_roots(vault))
+    boundaries = set()
+    for base in {vault, obsidian}:
+        for item in CFG.get("exclude", []):
+            path = base / item
+            boundaries.add(_norm(path))
+            actual = real_path(path)
+            if actual is not None:
+                boundaries.add(actual)
+    return roots, tuple(boundaries), (_norm(obsidian), real_path(obsidian))
+
+
+def bad_parts(relative):
+    parts = relative.strip(os.sep).split(os.sep) if relative else []
+    return (any(p in SKIP_DIRS or SECRET_WORD.search(p) for p in parts)
+            or bool(parts and SECRET_NAME.search(parts[-1])))
+
+
+def excluded(path, root, actual=None, names_only=False):
+    vault = VAULT_FOR_EXCLUDE or root
+    actual = real_path(path) if actual is None else actual
+    if actual is None:
         return True
-    full = _norm(path)
-    for x in CFG.get("exclude", []):
-        for base in {root, VAULT_FOR_EXCLUDE or root, obsidian_root(VAULT_FOR_EXCLUDE or root)}:
-            ex = _norm(Path(base) / x)
-            if full == ex or full.startswith(ex + os.sep):
+    roots, boundaries, metadata = access_rules(vault)
+    logical = _norm(path)
+    if any(under(candidate, boundary) for candidate in (logical, actual) for boundary in boundaries):
+        return True
+    for index, candidate in enumerate((logical, actual)):
+        primary = roots[0][index]
+        if under(candidate, primary):
+            if bad_parts(candidate[len(primary):]):
+                return True
+            continue  # 볼트 이름과 볼트 위쪽 폴더 이름은 비밀 이름 검사 대상이 아니다.
+        matched = False
+        for pair in roots[1:]:
+            anchor = pair[index]
+            if under(candidate, anchor):
+                matched = True
+                if bad_parts(os.path.basename(anchor) + candidate[len(anchor):]):
+                    return True
+        if matched:
+            continue
+        if names_only and under(candidate, metadata[index]):
+            if bad_parts(candidate[len(metadata[index]):]):
                 return True
     return False
+
+
+def readable(path, root, actual=None, names_only=False):
+    actual = real_path(path) if actual is None else actual
+    if actual is None:
+        return False
+    roots, _, metadata = access_rules(VAULT_FOR_EXCLUDE or root)
+    allowed = any(under(actual, pair[1]) for pair in roots)
+    if names_only:
+        allowed = allowed or under(actual, metadata[1])
+    return allowed and not excluded(path, root, actual, names_only)
+
+
+def walk_files(base, root, recursive=True, names_only=False, suffix=None):
+    actual_base = real_path(base)
+    if actual_base is None or not readable(base, root, actual_base, names_only):
+        return
+    pending = [(base, actual_base)]
+    while pending:
+        folder, actual_folder = pending.pop()
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    # Win32 경로에서 다른 이름으로 해석될 수 있는 항목은 열지 않는다.
+                    if os.name == "nt" and entry.name.endswith((".", " ")):
+                        continue
+                    try:
+                        directory = entry.is_dir(follow_symlinks=False)
+                        if not directory and suffix:
+                            name = entry.name.casefold()
+                            if name == suffix or not name.endswith(suffix):
+                                continue
+                        info = entry.stat(follow_symlinks=False)
+                        linked = entry.is_symlink() or (os.name == "nt" and
+                                 info.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT)
+                        if linked and directory:
+                            continue
+                        if not directory and not entry.is_file():
+                            continue
+                    except OSError:
+                        continue
+                    path = Path(entry.path)
+                    # 비연결 항목은 검사한 부모의 실제 경로를 재사용한다.
+                    actual = real_path(path, None if linked else os.path.join(actual_folder, entry.name))
+                    if linked and names_only and not readable(path, root, actual):
+                        continue
+                    if actual is None or not readable(path, root, actual, names_only):
+                        continue
+                    if directory:
+                        if recursive:
+                            pending.append((path, actual))
+                    else:
+                        yield path
+        except OSError:
+            continue
+
+
+def note_text(path):
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def now():
@@ -167,13 +327,28 @@ def parse_week(title):
 
 
 def render(vault, template_name, title):
+    if any(part in template_name for part in ("/", "\\", "..")):
+        sys.exit("템플릿 이름에 경로 구분자나 '..'를 쓸 수 없습니다.")
     path = vault / "99_System" / "Templates" / f"{template_name}.md"
-    if path.exists():
-        text = path.read_text(encoding="utf-8")
-    elif template_name in BUILTIN:
-        text = BUILTIN[template_name]
-    else:
-        sys.exit(f"템플릿이 없습니다: {path}")
+    actual = real_path(path)
+    if actual is None:
+        sys.exit(f"템플릿의 실제 경로를 확인할 수 없습니다(읽지 않음): {path}")
+    root = obsidian_root(vault)
+    if excluded(path, root, actual) or SECRET_NAME.search(template_name):
+        sys.exit(f"제외된 템플릿 경로입니다(읽지 않음): {path}")
+    roots, _, _ = access_rules(vault)
+    if not any(under(actual, pair[1]) for pair in roots):
+        sys.exit(f"템플릿이 읽기 허용 범위 밖입니다: {path}\n"
+                 "공유 템플릿 폴더라면 config.json의 read_outside에 추가하세요.")
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        if template_name in BUILTIN:
+            text = BUILTIN[template_name]
+        else:
+            sys.exit(f"템플릿이 없습니다: {path}")
+    except OSError:
+        sys.exit(f"템플릿을 읽을 수 없습니다: {path}")
     current = now()
 
     def title_date():
@@ -229,9 +404,7 @@ def frontmatter(text):
 
 
 def notes(vault):
-    for p in vault.rglob("*.md"):
-        if not excluded(p, vault):
-            yield p
+    yield from walk_files(vault, obsidian_root(vault), suffix=".md")
 
 
 def strip_code(text):
@@ -248,13 +421,12 @@ def links_of(text):
 def link_index(root):
     """Obsidian 방식: 파일 이름(확장자 제외) 또는 볼트 루트 기준 경로로 해석."""
     names, paths = set(), set()
-    for p in root.rglob("*"):
-        if not p.is_file() or excluded(p, root):
-            continue
-        rel = p.relative_to(root)
-        stem = normalized_link(rel.as_posix())
-        names.add(Path(stem).name)
-        paths.add(stem)
+    for base in dict.fromkeys((root, *read_roots(VAULT_FOR_EXCLUDE or root))):
+        for p in walk_files(base, root, names_only=True):
+            rel = relative_path(p, root)
+            stem = normalized_link(rel.as_posix())
+            names.add(Path(stem).name)
+            paths.add(stem)
     return names, paths
 
 
@@ -265,8 +437,13 @@ def resolves(target, names, paths):
 
 def folder_of(vault, kind):
     folder = Path(os.path.abspath(vault / CFG.get("folders", {}).get(kind, KINDS[kind][1])))
-    if not folder.resolve().is_relative_to(vault.resolve()):
+    actual = real_path(folder)
+    if actual is None:
+        sys.exit(f"노트 폴더의 실제 경로를 확인할 수 없습니다(읽지 않음): {folder}")
+    if not under(actual, real_path(vault)):
         sys.exit(f"노트 폴더는 볼트 안이어야 합니다: {kind} → {folder}")
+    if excluded(folder, obsidian_root(vault), actual):
+        sys.exit(f"제외된 노트 폴더입니다: {kind} → {folder}")
     return folder
 
 
@@ -285,9 +462,15 @@ def parse_date(text):
 def cmd_init(a):
     if not STARTER.is_dir():
         sys.exit(f"스타터 볼트가 없습니다: {STARTER}")
-    target = Path(a.folder).expanduser().resolve()
-    if target.exists() and any(target.rglob("*.md")):
-        sys.exit(f"이미 노트가 있는 폴더입니다(덮어쓰지 않음): {target}\n기존 볼트를 쓰려면: python sb.py setup \"{target}\"")
+    target = display_path(a.folder)
+    try:
+        exists = target.exists()
+    except OSError:
+        sys.exit(f"볼트 폴더를 읽을 수 없습니다: {target}")
+    if exists:
+        check_vault_access(target)
+        if any(target.rglob("*.md")):
+            sys.exit(f"이미 노트가 있는 폴더입니다(덮어쓰지 않음): {target}\n기존 볼트를 쓰려면: python sb.py setup \"{target}\"")
     try:
         for d in FOLDERS:
             (target / d).mkdir(parents=True, exist_ok=True)
@@ -307,9 +490,14 @@ def cmd_init(a):
 
 
 def cmd_setup(a):
-    target = Path(a.folder).expanduser().resolve()
-    if not target.is_dir():
+    target = display_path(a.folder)
+    try:
+        exists = target.is_dir()
+    except OSError:
+        sys.exit(f"볼트 폴더를 읽을 수 없습니다: {target}")
+    if not exists:
         sys.exit(f"폴더가 없습니다: {target}")
+    check_vault_access(target)
     save_config(vault=str(target))
     print(f"볼트 경로를 저장했습니다: {target}")
     warn_env()
@@ -396,21 +584,22 @@ def cmd_tasks(a):
     root = obsidian_root(vault)
     today = now().date()
     rows = []
-    for p in sorted(folder_of(vault, "daily").glob("*.md")):
-        if excluded(p, root):
-            continue
+    for p in sorted(walk_files(folder_of(vault, "daily"), root, recursive=False, suffix=".md")):
         try:
             d = dt.date.fromisoformat(p.stem)
         except ValueError:
             continue
-        for line in p.read_text(encoding="utf-8").splitlines():
+        text = note_text(p)
+        if text is None:
+            continue
+        for line in text.splitlines():
             m = OPEN_TASK.match(line)
             if m:
                 rows.append(((today - d).days, p.stem, m[1]))
-    for p in sorted(folder_of(vault, "project").glob("*.md")):
-        if excluded(p, root):
+    for p in sorted(walk_files(folder_of(vault, "project"), root, recursive=False, suffix=".md")):
+        text = note_text(p)
+        if text is None:
             continue
-        text = p.read_text(encoding="utf-8")
         if (frontmatter(text) or {}).get("status") != "active":
             continue
         for line in text.splitlines():
@@ -429,12 +618,14 @@ def cmd_stale(a):
     root = obsidian_root(vault)
     limit = now() - dt.timedelta(days=a.days)
     found = False
-    for p in sorted(folder_of(vault, "project").glob("*.md")):
-        if excluded(p, root):
+    for p in sorted(walk_files(folder_of(vault, "project"), root, recursive=False, suffix=".md")):
+        text = note_text(p)
+        if text is None or (frontmatter(text) or {}).get("status") != "active":
             continue
-        if (frontmatter(p.read_text(encoding="utf-8")) or {}).get("status") != "active":
+        try:
+            mtime = dt.datetime.fromtimestamp(p.stat().st_mtime, KST)  # updated보다 파일 수정 시각이 정확하다
+        except OSError:
             continue
-        mtime = dt.datetime.fromtimestamp(p.stat().st_mtime, KST)  # updated보다 파일 수정 시각이 정확하다
         if mtime < limit:
             found = True
             print(f"[[{p.stem}]]\t최근 수정 {mtime:%Y-%m-%d}")
@@ -447,7 +638,10 @@ def cmd_tags(a):
     for p in notes(resolve_vault()):
         if "99_System" in p.parts:
             continue
-        tags = (frontmatter(p.read_text(encoding="utf-8", errors="replace")) or {}).get("tags", [])
+        text = note_text(p)
+        if text is None:
+            continue
+        tags = (frontmatter(text) or {}).get("tags", [])
         if isinstance(tags, str):
             tags = [unquote(t) for t in tags.strip("[]").split(",") if t.strip()]
         for t in tags:
@@ -468,16 +662,20 @@ def cmd_backlinks(a):
     root = obsidian_root(vault)
     name = normalized_link(a.name)
     hits = []
-    outside = [Path(os.path.abspath(vault / x)) for x in CFG.get("read_outside", [])]  # 볼트 밖은 허용한 폴더만
-    scan = [vault] + [d for d in outside if d.is_dir()]
-    candidates = {p for base in scan for p in base.rglob("*.md") if not excluded(p, root)}
-    for p in sorted(candidates):
-        targets = [normalized_link(t) for t in links_of(p.read_text(encoding="utf-8", errors="replace"))]
+    candidates = {}
+    for base in read_roots(vault):
+        for p in walk_files(base, root, suffix=".md"):
+            candidates.setdefault(real_path(p), p)
+    for p in sorted(candidates.values()):
+        text = note_text(p)
+        if text is None:
+            continue
+        targets = [normalized_link(t) for t in links_of(text)]
         if any(t == name or t.endswith("/" + name) for t in targets):
             hits.append(p)
     for p in hits:
-        where = "볼트 안" if p.is_relative_to(vault) else "볼트 밖(고치지 말고 보고)"
-        print(f"{Path(os.path.relpath(p, root)).as_posix()}\t{where}")
+        where = "볼트 안" if under(real_path(p), real_path(vault)) else "볼트 밖(고치지 말고 보고)"
+        print(f"{relative_path(p, root).as_posix()}\t{where}")
     if not hits:
         print("백링크 없음")
 
@@ -485,27 +683,44 @@ def cmd_backlinks(a):
 def cmd_lint(a):
     vault = resolve_vault()
     root = obsidian_root(vault)
-    files = [Path(os.path.abspath(f)) for f in a.files] if a.files else list(notes(vault))
-    missing = [str(f) for f in files if not f.is_file()]
+    note_paths = list(notes(vault))
+    files = [Path(os.path.abspath(f)) for f in a.files] if a.files else note_paths
+    missing, inaccessible = [], set()
+    for path in files:
+        try:
+            if not path.is_file():
+                if a.files:
+                    missing.append(str(path))
+                else:
+                    inaccessible.add(path)
+        except OSError:
+            inaccessible.add(path)
     if missing:
         sys.exit("파일 없음: " + ", ".join(missing))
     names, paths = link_index(root)
     inbound = {}
-    for p in notes(vault):
-        for t in links_of(p.read_text(encoding="utf-8", errors="replace")):
+    contents = {p: None if p in inaccessible else note_text(p) for p in note_paths}
+    for p, text in contents.items():
+        for t in links_of(text or ""):
             inbound.setdefault(Path(normalized_link(t)).name, set()).add(p.stem)
     issues, checked = [], 0
     for p in files:
         rel = p.relative_to(vault).as_posix() if p.is_relative_to(vault) else str(p)
-        if p.is_relative_to(root) and excluded(p, root):
+        if p in inaccessible and not a.files:
+            print(f"{rel}\t읽을 수 없는 파일(건너뜀)")
+            continue
+        if p in inaccessible or not readable(p, root):
             print(f"{rel}\t제외된 경로(읽지 않음)")
             continue
         if rel.startswith("99_System/") or p.name in {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}:
             if a.files:
                 print(f"{rel}\t건너뜀(점검 대상 아님: 템플릿·규칙 파일은 sb new로 노트를 만들어 그 노트를 점검)")
             continue
+        text = contents[p] if p in contents else note_text(p)
+        if text is None:
+            print(f"{rel}\t읽을 수 없는 파일(건너뜀)")
+            continue
         checked += 1
-        text = p.read_text(encoding="utf-8", errors="replace")
         fm = frontmatter(text)
         if fm is None:
             issues.append((rel, "frontmatter 없음"))

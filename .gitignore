@@ -1,0 +1,17 @@
+# 개인 설정은 ~/.second-brain/에 두지만, 실수로 저장소에 만들어도 올라가지 않게 한다
+local.md
+config.json
+
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+
+# 공개 저장소에 새기 쉬운 로컬 파일
+.claude/
+.obsidian/
+.trash/
+.env*
+*.pem
+*.key
+*.log

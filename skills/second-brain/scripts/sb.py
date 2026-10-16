@@ -10,12 +10,15 @@
   python sb.py render <템플릿> [--title T]    Templater 구문을 실제 값으로 바꾼 본문 출력
   python sb.py new <종류> [제목] [--date D] [--dry-run]
                                              템플릿으로 새 노트 생성(같은 이름이 있으면 거부)
-                                             종류: daily weekly project fix note inbox resource
+                                             종류: daily weekly project fix note inbox resource repo
   python sb.py tasks [--older N]             일일 노트·진행 중 프로젝트의 미완료 할 일
   python sb.py stale [--days 14]             N일 넘게 수정되지 않은 active 프로젝트
   python sb.py tags                          쓰고 있는 태그와 개수
   python sb.py backlinks <노트 이름>          그 노트를 [[링크]]하는 파일 목록
-  python sb.py lint [파일...]                 형식·링크·잔여 Templater·비밀정보 점검(기본: 볼트 전체)
+  python sb.py lint [파일...]                 형식·링크·잔여 Templater·비밀정보·남은 충돌 표시 점검(기본: 볼트 전체)
+  python sb.py index [--quiet]               99_System/색인.md(폴더별 노트 목록·한 줄 요약)를 다시 만든다(바뀐 게 있을 때만 씀)
+  python sb.py log <ingest|query|lint> <제목> [--source S] [--pages 노트...] [--note M]
+                                             99_System/브레인 로그.md 끝에 작업 기록 한 건을 덧붙인다
 
 볼트 위치: 환경변수 SECOND_BRAIN > ~/.second-brain/config.json의 "vault" 순서로 찾는다.
 config.json 선택 키: folders(종류별 폴더), exclude(열지 않을 폴더, 볼트 또는 Obsidian 루트 기준),
@@ -79,15 +82,23 @@ KINDS = {  # 종류: (템플릿, 기본 폴더) — config.json "folders"로 폴
     "resource": ("Resource", "40_Resources/참고 자료"),
     "note": ("Note", "50_Notes"),
     "inbox": ("Inbox", "00_Inbox"),
+    "repo": ("Repo", "40_Resources/저장소"),
 }
 # 볼트에 템플릿 파일이 없을 때만 쓰는 기본 구조
 BUILTIN = {
     "Resource": '---\ntype: resource\ntags: []\ncreated: <% tp.date.now("YYYY-MM-DDTHH:mm") %>\n---\n'
                 "# <% tp.file.title %>\n\n## 요약\n- \n\n## 원본\n- \n",
+    # 저장소 노트(/init-project). 템플릿 파일을 볼트에 두지 않는다(켜진 Templater가 새 템플릿 파일을 실행해 망가뜨릴 수 있다).
+    "Repo": '---\ntype: repo\narea:\ntags: []\ncreated: <% tp.date.now("YYYY-MM-DDTHH:mm") %>\n---\n'
+            "# <% tp.file.title %>\n\n> \n\n## 개요\n\n## 위치\n\n## 스택\n\n## 기능\n\n## 구조와 흐름\n\n"
+            "## 현재 상태\n\n## 주요 결정\n\n## 다음 할 일\n\n## 관련\n",
 }
 FOLDERS = ["00_Inbox", "10_Daily/Weekly", "20_Projects", "30_Areas", "40_Resources/해결 기록",
            "40_Resources/참고 자료", "50_Notes", "90_Archive", "99_System/Templates", "99_System/Routines"]
-TYPES = {"inbox", "daily", "weekly", "project", "area", "resource", "fix", "note", "system"}
+TYPES = {"inbox", "daily", "weekly", "project", "area", "resource", "fix", "note", "system", "journal", "dream", "repo"}
+INDEX_NOTE = ("99_System", "색인.md")
+LOG_NOTE = ("99_System", "브레인 로그.md")
+LOG_KINDS = ("ingest", "query", "lint")
 SKIP_DIRS = {".obsidian", ".trash", ".git", ".tmp.driveupload", ".tmp.drivedownload", "node_modules"}
 SECRET_NAME = re.compile(r"(?i)토큰|비번|비밀번호|(?<![a-z])(?:password|passwd|token|secret|credential)s?(?![a-z])"
                          r"|\.env$|\.pem$|\.key$")
@@ -532,6 +543,8 @@ def cmd_today(a):
     print(f"prev: {d - dt.timedelta(days=1)}  next: {d + dt.timedelta(days=1)}")
     print(f"daily: {daily}  exists={daily.exists()}")
     print(f"weekly: {weekly}  exists={weekly.exists()}")
+    journal = vault / "10_Daily" / "Journal" / f"{d} 세션.md"
+    print(f"journal: {journal}  exists={journal.exists()}  (hook 자동 일지 — 읽기만)")
     for label, pattern in CFG.get("today_sources", {}).items():  # 예: {"업무 일지": "../업무 일지/%Y-%m-%d.md"}
         p = obsidian_root(vault) / d.strftime(pattern)
         print(f"{label}: {p}  exists={p.exists()}")
@@ -606,9 +619,19 @@ def cmd_tasks(a):
             m = OPEN_TASK.match(line)
             if m:
                 rows.append((None, p.stem, m[1]))
+    repo_rows = []  # 저장소 노트(/init-project)의 '다음 할 일'
+    for p in sorted(walk_files(folder_of(vault, "repo"), root, recursive=False, suffix=".md")):
+        text = note_text(p)
+        if text is None or (frontmatter(text) or {}).get("type") != "repo":
+            continue
+        repo_rows += [(p.stem, m[1]) for m in map(OPEN_TASK.match, text.splitlines()) if m]
     shown = [r for r in rows if a.older is None or (r[0] is not None and r[0] > a.older)]
     for age, src, task in shown:
         print(f"[[{src}]]\t{'프로젝트' if age is None else f'{age}일 전'}\t{task}")
+    if a.older is None:
+        for src, task in repo_rows:
+            print(f"[[{src}]]\t저장소\t{task}")
+        shown += repo_rows
     if not shown:
         print("해당하는 미완료 할 일 없음")
 
@@ -701,6 +724,8 @@ def cmd_lint(a):
     inbound = {}
     contents = {p: None if p in inaccessible else note_text(p) for p in note_paths}
     for p, text in contents.items():
+        if p.is_relative_to(vault) and p.relative_to(vault).parts[:1] == ("99_System",):
+            continue  # 색인·브레인 로그·템플릿의 링크는 연결로 치지 않는다
         for t in links_of(text or ""):
             inbound.setdefault(Path(normalized_link(t)).name, set()).add(p.stem)
     issues, checked = [], 0
@@ -748,15 +773,143 @@ def cmd_lint(a):
         for target in out:
             # 일일 노트의 날짜 링크(어제·내일)는 아직 없는 날짜를 가리킬 수 있다
             is_date = re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized_link(target))
-            if not resolves(target, names, paths) and not (is_date and t in {"daily", "weekly"}):
+            if not resolves(target, names, paths) and not (is_date and t in {"daily", "weekly", "journal"}):
                 issues.append((rel, f"깨진 링크 [[{target}]]"))
-        if t not in {"inbox", "daily", "weekly", "system", ""} and not out and normalized_link(p.name) not in inbound:
+        if t not in {"inbox", "daily", "weekly", "system", "journal", "dream", ""} and not out \
+                and normalized_link(p.name) not in inbound:
             issues.append((rel, "고아 노트(들어오고 나가는 링크 없음)"))
+        for conflict in re.findall(r"^[ \t]*(?:>[ \t]*)+충돌:[ \t]*(.*)$", strip_code(text), re.M):
+            issues.append((rel, f"남은 충돌 표시: {conflict.strip()[:60]} — 출처를 확인해 정리하거나 사용자에게 묻기"))
     for rel, msg in issues:
         print(f"{rel}\t{msg}")
     scope = "지정한 파일" if a.files else "볼트 전체"
     print(f"점검({scope}) {checked}개, 문제 {len(issues)}건")
     sys.exit(1 if issues else 0)
+
+
+SUMMARY_SECTION = {"fix": "현상", "project": "목표", "resource": "요약"}
+
+
+def plain(line):
+    line = re.sub(r"\[\[([^\]|]+)\|([^\]]+)\]\]", r"\2", line)
+    line = re.sub(r"\[\[([^\]]+)\]\]", r"\1", line)
+    line = re.sub(r"^\s*(?:[-*>]\s*)+(?:\[[ xX]\]\s*)?", "", line)
+    line = re.sub(r"[`*]+", "", line)  # 밑줄은 남긴다(함수·테이블 같은 식별자에 들어 있다)
+    return re.sub(r"\s+", " ", line).strip()
+
+
+def summary_of(text, kind):
+    body = re.sub(r"^---\r?\n.*?\r?\n---\r?\n", "", text, count=1, flags=re.S)
+    body = re.sub(r"```.*?```", "", body, flags=re.S)
+    archived = re.search(r"^> 보관:\s*(.+)$", body, re.M)
+    if archived:
+        return "보관: " + plain(archived[1])
+    head = SUMMARY_SECTION.get(kind)
+    if head:
+        sec = re.search(rf"^## {re.escape(head)}[^\n]*\n(.*?)(?=^## |\Z)", body, re.M | re.S)
+        for line in (sec[1].splitlines() if sec else []):
+            if plain(line):
+                return plain(line)
+    for line in body.splitlines():  # 제목(#)·표·내비게이션 줄은 건너뛴다
+        s = line.strip()
+        if not s or s.startswith(("#", "|", "←", "<!--")) or s in {"-", ">", "- [ ]"}:
+            continue
+        if plain(s):
+            return plain(s)
+    return ""
+
+
+def tags_of(fm):
+    tags = fm.get("tags", [])
+    if isinstance(tags, str):
+        tags = [unquote(t) for t in tags.strip("[]").split(",") if t.strip()]
+    return [t for t in tags if t]
+
+
+def cmd_index(a):
+    vault = resolve_vault()
+    groups, daily = {}, {"일일": [], "주간": [], "세션 일지": []}
+    for p in notes(vault):
+        rel = p.relative_to(vault)
+        top = rel.parts[0] if len(rel.parts) > 1 else ""
+        if top == "99_System":
+            continue
+        text = note_text(p)
+        if text is None:
+            continue
+        if top == "10_Daily":
+            sub = rel.parts[1] if len(rel.parts) > 2 else ""
+            daily["주간" if sub == "Weekly" else "세션 일지" if sub == "Journal" else "일일"].append(p.stem)
+            continue
+        fm = frontmatter(text) or {}
+        kind = fm.get("type", "")
+        meta = [x for x in [fm.get("status") if kind == "project" else ""] if x]
+        meta += [f"`#{t}`" for t in tags_of(fm)]  # 코드 안의 #은 Obsidian 태그로 잡히지 않는다
+        summary = summary_of(text, kind)[:90] if kind not in {"area", "note", "system", "dream"} else ""
+        line = f"- {p.stem}" + (f" ({' '.join(meta)})" if meta else "") + (f" — {summary}" if summary else "")
+        folder = rel.parent.as_posix() if top else "(볼트 루트)"
+        groups.setdefault(folder, []).append(line)
+    out = ["# 색인", "",
+           "> 🤖 `sb index`가 만든 볼트 목록이다. 손으로 고치지 않는다(다시 만들면 덮어쓴다).",
+           "> 볼트에서 찾을 때 이 파일을 먼저 읽고 `## 폴더` + 노트 이름 + `.md`로 연다. 없으면 볼트 안에서 `rg -il <키워드>`.",
+           "STAMP", ""]
+    out += [f"## 10_Daily", "- " + " · ".join(
+        f"{k} {len(v)}개" + (f"(최근: {', '.join(sorted(v)[-3:][::-1])})" if v else "") for k, v in daily.items()), ""]
+    for folder in sorted(groups, key=lambda f: (f == "(볼트 루트)", f)):
+        rows = sorted(groups[folder])
+        if len(rows) > 50:  # 큰 폴더는 이름만(요약을 빼 색인이 한 번에 읽히게). 하위 폴더로 나눌 때가 됐다는 신호.
+            rows = [re.sub(r" — .*$", "", r) for r in rows]
+            out += [f"## {folder} ({len(rows)}, 50개가 넘어 이름만 — 하위 폴더로 나눌 것)", *rows, ""]
+            continue
+        out += [f"## {folder} ({len(rows)})", *rows, ""]
+    body = "\n".join(out)
+    target = vault.joinpath(*INDEX_NOTE)
+    old = note_text(target) if target.exists() else None
+    old_fm = frontmatter(old or "") or {}
+    created = old_fm.get("created") or f"{now():%Y-%m-%dT%H:%M}"
+    stamp = f"> 기준: {now():%Y-%m-%d %H:%M} · 노트 {sum(len(v) for v in groups.values())}개"
+    new = f"---\ntype: system\ntags: []\ncreated: {created}\n---\n" + body.replace("STAMP", stamp, 1)
+    unstamp = lambda t: re.sub(r"^> 기준: .*$", "", re.sub(r"^---\r?\n.*?\r?\n---\r?\n", "", t or "", count=1, flags=re.S), count=1, flags=re.M)
+    if old is not None and unstamp(old) == unstamp(new):
+        print("색인: 변경 없음" if a.quiet else f"색인 변경 없음: {target}")
+        return
+    with open(target, "w", encoding="utf-8", newline="\n") as f:
+        f.write(new)
+    print("색인: 갱신" if a.quiet else f"색인 갱신: {target}\n{stamp[2:]}")
+
+
+def cmd_log(a):
+    vault = resolve_vault()
+    if a.kind not in LOG_KINDS:
+        sys.exit(f"종류는 {', '.join(LOG_KINDS)} 중 하나입니다(그냥 찾아서 답만 한 질문은 적지 않는다).")
+    title = re.sub(r"\s+", " ", a.title).strip()
+    entry = [f"## [{now():%Y-%m-%d}] {a.kind} | {title}"]
+    if a.source:
+        entry.append(f"- 원본: {a.source}")
+    if a.pages:
+        entry.append("- 고친 노트: " + ", ".join(p if p.startswith("[[") else f"[[{p}]]" for p in a.pages))
+    if a.note:
+        entry.append(f"- 메모: {a.note}")
+    if any(SECRET.search(x) for x in entry):
+        sys.exit("비밀정보로 보이는 문자열이 있어 쓰지 않았습니다. [비밀정보 제거됨]으로 바꿔 다시 실행하세요.")
+    target = vault.joinpath(*LOG_NOTE)
+    try:  # 없을 때만 머리말을 만든다(다른 세션이 동시에 만들면 그쪽 것을 쓴다)
+        with open(target, "x", encoding="utf-8", newline="\n") as f:
+            f.write(f"---\ntype: system\ntags: []\ncreated: {now():%Y-%m-%dT%H:%M}\n---\n# 브레인 로그\n\n"
+                    "> 추가만 하는 작업 기록. 머리줄 `## [YYYY-MM-DD] ingest|query|lint | 제목` 형식을 지킨다"
+                    "(`rg \"^## \\[\" \"99_System/브레인 로그.md\"`로 훑는다). 그냥 찾아서 답만 한 질문은 적지 않는다. 쓰기는 `sb log`로.\n")
+    except FileExistsError:
+        pass
+    try:
+        with open(target, "rb") as f:
+            f.seek(-1, os.SEEK_END)
+            last = f.read(1)
+    except OSError:
+        last = b"\n"
+    prefix = "\n" if last == b"\n" else "\n\n"  # 끝 줄바꿈이 없으면 새 머리줄이 앞 줄에 붙는다
+    with open(target, "a", encoding="utf-8", newline="\n") as f:  # 덧붙이기만: 동시에 써도 서로 지우지 않는다
+        f.write(prefix + "\n".join(entry) + "\n")
+    print(f"logged: {entry[0]}")
 
 
 def main():
@@ -773,6 +926,9 @@ def main():
     s = sub.add_parser("tags"); s.set_defaults(fn=cmd_tags)
     s = sub.add_parser("backlinks"); s.add_argument("name"); s.set_defaults(fn=cmd_backlinks)
     s = sub.add_parser("lint"); s.add_argument("files", nargs="*"); s.set_defaults(fn=cmd_lint)
+    s = sub.add_parser("index"); s.add_argument("--quiet", action="store_true"); s.set_defaults(fn=cmd_index)
+    s = sub.add_parser("log"); s.add_argument("kind"); s.add_argument("title")
+    s.add_argument("--source"); s.add_argument("--pages", nargs="*"); s.add_argument("--note"); s.set_defaults(fn=cmd_log)
     a = ap.parse_args()
     a.fn(a)
 

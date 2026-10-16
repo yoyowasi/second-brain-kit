@@ -95,6 +95,9 @@ def load_settings(path):
                  "JSON 형식을 고친 뒤 다시 실행하세요.")
     if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
         sys.exit(f"settings.json 모양이 예상과 달라 고치지 않았습니다(최상위·hooks 가 객체가 아님): {path}")
+    odd = [event for event, groups in data.get("hooks", {}).items() if not isinstance(groups, list)]
+    if odd:  # 이벤트 값은 hook 그룹 목록이어야 한다. 아니면 어디에 넣을지 알 수 없으니 손대지 않는다.
+        sys.exit(f"settings.json 모양이 예상과 달라 고치지 않았습니다(hooks.{odd[0]} 이 목록이 아님): {path}")
     return raw, data
 
 
@@ -161,6 +164,13 @@ def main():
         copy_files(claude)
         configure_settings(claude, a.python)
         configure_claude_md(claude)
+        try:
+            same = claude.resolve() == (Path.home() / ".claude").resolve()
+        except OSError:
+            same = False
+        if not same:  # 등록한 명령은 어느 PC 에서나 통하도록 $HOME/.claude/hooks 를 가리킨다
+            print(f'주의: settings.json 의 hook 명령은 "$HOME/.claude/hooks/..." 를 가리키는데 hook 파일은 {claude / "hooks"} 에 '
+                  "복사했습니다. Claude Code 가 이 폴더를 설정 폴더로 쓰면(CLAUDE_CONFIG_DIR) settings.json 의 경로를 그 폴더로 직접 고치세요.")
         return
     path = claude / "settings.json"
     raw, data = load_settings(path)

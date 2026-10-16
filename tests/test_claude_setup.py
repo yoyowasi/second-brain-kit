@@ -98,10 +98,21 @@ class ClaudeSetupTests(unittest.TestCase):
         self.assertEqual(self.claude_md.read_text(encoding="utf-8"), text)
 
     def test_invalid_settings_are_not_touched(self):
-        self.settings.write_text('{"hooks": {,}', encoding="utf-8")
-        self.assertIn("고치지 않았습니다", self.run_setup("install", exit_code=1))
-        self.assertEqual(self.settings.read_text(encoding="utf-8"), '{"hooks": {,}')
-        self.assertEqual(self.backups(), [])
+        for text, reason in (('{"hooks": {,}', "읽지 못해"), ('{"hooks": {"SessionStart": {"hooks": []}}}', "hooks.SessionStart 이 목록이 아님"),
+                             ('{"hooks": []}', "객체가 아님")):
+            with self.subTest(text=text):
+                self.settings.write_text(text, encoding="utf-8")
+                out = self.run_setup("install", exit_code=1)
+                self.assertIn("고치지 않았습니다", out)
+                self.assertIn(reason, out)
+                self.assertEqual(self.settings.read_text(encoding="utf-8"), text)
+                self.assertEqual(self.backups(), [])
+                self.assertFalse(self.claude_md.exists())  # settings 에서 멈추면 CLAUDE.md 도 건드리지 않는다
+
+    def test_warns_when_claude_dir_is_not_home(self):
+        out = self.run_setup("install")  # 시험의 --claude-dir 은 임시 폴더라 늘 다르다
+        self.assertIn('주의: settings.json 의 hook 명령은 "$HOME/.claude/hooks/..."', out)
+        self.assertIn(str(self.claude / "hooks"), out)
 
     def test_remove_drops_only_brain_hooks(self):
         self.settings.write_text(json.dumps({"hooks": {"SessionEnd": [{"hooks": [OTHER]}]}}), encoding="utf-8")

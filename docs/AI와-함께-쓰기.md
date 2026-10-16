@@ -431,7 +431,8 @@ AI가 알아서 부르지 않고, 내가 직접 부르는 Claude Code 스킬이�
 - `~/.claude/skills/inbox/`, `~/.claude/skills/init-project/`.
 - `~/.claude/settings.json`: `hooks`의 `SessionStart`(lint-reminder → dream)와 `SessionEnd`(journal)에 그룹을 하나씩 더한다(`python "$HOME/.claude/hooks/<이름>.py"`, timeout 10초. `install.sh`는 `python3`가 되면 `python3`). 같은 등록이 이미 있으면 건드리지 않고, 예전 등록이 겹쳐 있으면 하나로 정리한다. 다른 hook과 설정은 그대로 둔다.
 - `~/.claude/CLAUDE.md`: 끝에 `<!-- brain:start -->` ~ `<!-- brain:end -->` 구역([tools/brain-claude-md.md](../tools/brain-claude-md.md))을 더한다. 구역이 이미 있으면 건드리지 않는다(승인한 규칙이 들어 있을 수 있다).
-- 고치기 전에 원본을 `settings.json.bak-<날짜시각>`, `CLAUDE.md.bak-<날짜시각>`으로 남긴다. 바꿀 것이 없으면 백업도 만들지 않는다. `settings.json`이 올바른 JSON이 아니면 아무것도 고치지 않고 멈춘다.
+- 고치기 전에 원본을 `settings.json.bak-<날짜시각>`, `CLAUDE.md.bak-<날짜시각>`으로 남긴다. 바꿀 것이 없으면 백업도 만들지 않는다. `settings.json`이 올바른 JSON이 아니거나 `hooks`의 모양이 예상과 다르면(이벤트 값이 목록이 아닌 경우 등) 아무것도 고치지 않고 `고치지 않았습니다`로 멈춘다.
+- 등록하는 hook 명령은 어느 PC에서나 통하도록 `$HOME/.claude/hooks/...`를 가리킨다. `CLAUDE_CONFIG_DIR`로 설정 폴더를 다른 곳에 두었다면 `tools/claude_setup.py install --claude-dir <그 폴더>`로 설치하고(`주의:` 줄이 나온다), `settings.json`의 명령 경로를 그 폴더로 직접 고친다.
 - 상태·대기열·잠금은 `~/.second-brain/state/`(볼트 밖, 동기화되지 않음)에 둔다.
 
 **확인**: Claude Code 새 세션에서 대화를 몇 번 주고받은 뒤 끝낸다. 1분쯤 뒤 볼트의 `10_Daily/Journal/<오늘> 세션.md`에 줄이 생기면 된다. 생기지 않으면 `~/.claude/hooks/brain-journal.log`를 본다(`로그인 필요로 중단`이면 `claude auth login`). 등록된 hook은 Claude Code의 `/hooks`에서도 볼 수 있다. 일지의 날짜·시각은 `config.json`의 `utc_offset`(기본 9)을 따른다.

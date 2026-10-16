@@ -21,6 +21,7 @@ AI는 볼트 일을 시작할 때마다 이 순서를 따른다.
 - [요청별로 AI가 실제로 하는 일](#요청별로-ai가-실제로-하는-일)
 - [다른 프로젝트 작업 중에 쓰기](#다른-프로젝트-작업-중에-쓰기)
 - [자동 루틴](#자동-루틴)
+- [자동 기록 (Claude Code hook)](#자동-기록-claude-code-hook)
 - [sb.py 명령 참고](#sbpy-명령-참고)
 - [문제 해결](#문제-해결)
 
@@ -30,13 +31,13 @@ AI는 볼트 일을 시작할 때마다 이 순서를 따른다.
 
 | 에이전트 | Windows (PowerShell) | macOS / Linux | 설치 위치 |
 |---|---|---|---|
-| Claude Code | `powershell -ExecutionPolicy Bypass -File install.ps1` | `bash install.sh` | `~/.claude/skills/second-brain` |
+| Claude Code | `powershell -ExecutionPolicy Bypass -File install.ps1` | `bash install.sh` | `~/.claude/skills/second-brain`과 [자동 기록](#자동-기록-claude-code-hook)(hook·`/inbox`·`/init-project`) |
 | Claude Code + Codex | `powershell -ExecutionPolicy Bypass -File install.ps1 -Codex` | `bash install.sh --codex` | 위 경로와 `~/.agents/skills/second-brain` |
 
 - Claude Code는 `~/.claude/skills/` 아래 스킬을 모든 프로젝트에서 쓴다.
 - Codex는 사용자 스킬을 `~/.agents/skills/`에서 읽는다(Codex 공식 문서 기준). 예전 버전의 Codex나 이 키트의 예전 설치 스크립트는 `~/.codex/skills`를 썼을 수 있다. 설치 뒤 Codex의 스킬 목록에 보이지 않으면 Codex 공식 문서에서 지금 버전의 사용자 스킬 위치를 확인한다.
 - `-ExecutionPolicy Bypass`는 그 한 번의 실행에만 적용되고 PC의 실행 정책 설정은 바꾸지 않는다.
-- 다시 실행해도 된다. 설치된 스킬 파일만 새로 복사하고 개인 설정 폴더 `~/.second-brain/`은 건드리지 않는다. 키트를 새 버전으로 바꿀 때는 저장소를 갱신(`git pull` 또는 새 ZIP)한 뒤 설치 스크립트를 다시 실행한다.
+- 다시 실행해도 된다. 설치된 스킬·hook 파일만 새로 복사하고 개인 설정 폴더 `~/.second-brain/`은 건드리지 않는다. `~/.claude/settings.json`·`~/.claude/CLAUDE.md`는 고칠 것이 있을 때만 백업을 남기고 고친다([설치가 바꾸는 파일](#설치가-바꾸는-파일과-확인)). 키트를 새 버전으로 바꿀 때는 저장소를 갱신(`git pull` 또는 새 ZIP)한 뒤 설치 스크립트를 다시 실행한다.
 - **볼트 경로와 개인 설정은 한 곳에 있다.** `config.json`(볼트 경로)과 `local.md`(개인 설정)는 설치 위치와 관계없이 `~/.second-brain/`에 두고 Claude Code와 Codex 설치가 함께 쓴다. 그래서 `init`이나 `setup`은 한 번만 하면 된다([개인 설정](#개인-설정-localmd와-configjson)).
 - **예전 버전에서 바꿀 때**: 예전 버전은 `config.json`·`local.md`를 설치된 스킬 폴더 안에 두었다. 지금 `sb.py`는 그 파일을 읽지 않으므로, 그 두 파일을 `~/.second-brain/`으로 옮기거나 `setup`을 다시 한 번 실행한다.
 
@@ -261,7 +262,8 @@ mkdir -p ~/.second-brain
   "today_sources": {
     "업무 일지": "../업무 일지/%Y-%m-%d.md"
   },
-  "utc_offset": 9
+  "utc_offset": 9,
+  "journal_exclude": ["D:/Private"]
 }
 ```
 
@@ -272,7 +274,8 @@ mkdir -p ~/.second-brain
 | `exclude` | `sb.py`가 열지 않을 폴더·파일. 볼트 기준 경로와 Obsidian 볼트 루트 기준 경로를 둘 다 받고, Windows에서는 대소문자를 가리지 않는다. 별칭과 실제 경로를 모두 검사하며, 비밀 이름 폴더도 같은 방식으로 제외한다. `lint`·`tags`·`backlinks`·`tasks`·`stale`와 `new`의 같은 이름 확인에서 빠진다 |
 | `read_outside` | 내용 읽기를 허용한 볼트 밖 폴더(볼트 기준, 예: `"../업무 일지"`). `backlinks` 검색, 명시한 외부 파일의 `lint` 점검, 연결된 외부 공유 템플릿의 `render`에 쓰인다. Obsidian 루트의 파일 이름만 색인하는 작업에는 이 허용이 필요 없다. 별칭과 실제 경로 어느 쪽으로 지정해도 같은 읽기 경계를 적용한다([볼트 루트가 더 위에 있을 때](#obsidian-볼트-루트가-더-위에-있을-때)) |
 | `today_sources` | `sb.py today`가 같이 보여 줄 외부 원본 파일. `"이름": "경로 패턴"` |
-| `utc_offset` | UTC 기준 시차(시간). 기본 9(한국 시간). 오늘 날짜와 `created` 시각에 쓴다 |
+| `utc_offset` | UTC 기준 시차(시간). 기본 9(한국 시간). 오늘 날짜와 `created` 시각, hook이 쓰는 세션 일지의 날짜·시각에 쓴다 |
+| `journal_exclude` | 세션 일지·dream에서 뺄 작업 폴더(경로 조각 목록). 그 폴더에서 연 Claude Code 세션은 요약하지도, 모델로 보내지도 않는다([자동 기록](#자동-기록-claude-code-hook)) |
 
 알아 둘 점:
 
@@ -386,6 +389,55 @@ cron은 터미널과 PATH가 달라 `claude`를 못 찾을 수 있으니 실행 
 
 **안전하게 시작하기**: 처음 몇 번은 같은 명령을 터미널에서 직접 실행해 결과를 확인한다. 루틴이 고치는 파일 범위를 넓히지 않는다. 볼트를 git으로 백업하고 있으면 문제가 생겨도 되돌리기 쉽다. 루틴에서 git commit·push는 시키지 않는다.
 
+## 자동 기록 (Claude Code hook)
+
+설치 스크립트는 Claude Code에 hook 세 개와 직접 부르는 스킬 두 개(`/inbox`, `/init-project`)를 함께 설치한다. Codex에는 이 기능이 없고, Codex에서는 볼트 `AGENTS.md` 규칙만 쓴다.
+
+| hook (이벤트) | 하는 일 | 쓰는 곳 |
+|---|---|---|
+| `brain-journal.py` (SessionEnd) | 끝난 세션에서 한 일을 한 줄로 요약한다. 이어서 연 세션은 늘어난 부분만 본다 | `10_Daily/Journal/YYYY-MM-DD 세션.md`에 `- HH:MM [프로젝트] 요약` |
+| `brain-dream.py` (SessionStart) | 1시간마다: SessionEnd가 오지 않은 채 30분 넘게 조용한 세션을 따라잡아 일지에 붙인다. 하루 한 번: 지난 실행 뒤 대화에서 사용자의 교정·선호를 골라 규칙 **제안**을 만든다. 7일마다: dream으로 들어간 규칙이 5개 이상이면 합치기·고치기·빼기 제안을 만든다. 매번: 색인을 다시 만든다(바뀐 게 있을 때만 쓴다) | `00_Inbox/YYYY-MM-DD dream 규칙 제안.md`(`type: dream`), `99_System/색인.md` |
+| `brain-lint-reminder.py` (SessionStart) | 필요할 때만 세션 맥락에 `[brain] ...` 안내 줄을 넣는다(종류마다 하루 한 번): dream 제안 대기, 마지막 점검이 7일 넘음, CLI 로그인 풀림, 일지 대기열이 2일 넘게 막힘. 무인 세션(헤드리스·예약 작업)에서는 아무것도 하지 않는다 | (볼트에 쓰지 않음) |
+
+hook은 세션 시작·종료를 막지 않도록 곧바로 끝나고, 요약은 떼어 낸 백그라운드 프로세스가 한다. 여러 세션이 동시에 끝나도 파일 잠금으로 겹치지 않는다.
+
+**요약에는 터미널 `claude` CLI 로그인이 필요하다.** 요약은 `claude -p --model haiku`를 도구 없이(`--tools ""`, `--safe-mode`) 부른다. 데스크톱 앱이나 IDE에서만 로그인했다면 터미널에서 한 번 로그인한다.
+
+```bash
+claude auth login
+```
+
+로그인 전이거나 사용량 한도·네트워크 오류가 나면 항목을 대기열(`~/.second-brain/state/queue/`)에 남겨 두었다가 다음 세션 시작 때 다시 처리한다. 7일 넘게 처리하지 못한 항목은 대기열에서 뺀다(원본 대화 기록은 `~/.claude/projects/`에 그대로 있다). 로그인이 풀려 있으면 `[brain]` 줄이 알려 준다.
+
+**모델로 보내는 것**: 일지는 그 세션에서 사람이 친 말과 Claude의 글만(도구 호출·결과, `system-reminder`, 하위 에이전트 알림 제외) 마지막 20KB까지 보낸다. dream은 지난 실행 뒤 사용자 말마다 바로 앞 Claude 답 끝 300자를 붙인 발췌(최근 것부터 120KB), 전역 `CLAUDE.md`, `30_Areas/나의 판단 방식.md`, 관련 프로젝트의 Claude 메모리 목록을 보낸다. 보내기 전에 비밀번호·토큰·접속 문자열·카드번호·주민등록번호·전화번호로 보이는 문자열을 `[비밀정보 제거됨]`으로 바꾼다. 로그인한 Claude 계정의 사용량(세션마다 haiku 한 번, 하루에 dream 한 번)을 쓴다.
+
+**빠지는 세션**: 에이전트 scratchpad·임시 폴더 세션, 예약 작업으로 실행된 세션, 새 대화가 1KB 미만인 세션, `config.json`의 `journal_exclude`에 적은 폴더의 세션. 세션 일지와 dream 제안은 볼트 노트라 볼트를 git 등으로 백업하면 함께 올라간다. 올리고 싶지 않은 작업 폴더(예: 개인 문서 폴더)는 `journal_exclude`에 넣는다.
+
+**승인한 것만 규칙이 된다**: dream 제안은 `/inbox`에서 번호별로 승인한 것만 전역 `~/.claude/CLAUDE.md`의 `# 배운 규칙 (dream)`(`<!-- brain:start -->` 구역 안, 최대 30줄, 줄마다 `[Lnn]`) 또는 그 프로젝트의 Claude 메모리(`~/.claude/projects/<폴더>/memory/`)에 들어간다. 무인 루틴과 다른 에이전트는 dream 파일을 건드리지 않는다(`AGENTS.md` "인박스 정리" 4번).
+
+### /inbox와 /init-project
+
+AI가 알아서 부르지 않고, 내가 직접 부르는 Claude Code 스킬이다.
+
+| 명령 | 하는 일 |
+|---|---|
+| `/inbox` | 인박스를 나와 함께 정리한다. 일반 메모는 같은 주제 노트에 합치거나 맞는 폴더로 옮기고(`AGENTS.md` "인박스 정리"), dream 제안은 표로 보여 준 뒤 "전부 / 번호 / 없음"으로 승인받아 반영한다. 반영 결과는 dream 파일 끝에 적고, 보류가 없으면 파일을 `90_Archive/`로 옮긴다 |
+| `/inbox 같이` | 자료마다 고치기 전에 핵심 2~3줄과 고칠 노트 목록을 보여 주고 무엇을 강조할지 묻는다 |
+| `/init-project [경로]` | 코드 저장소를 읽기만 하고 `40_Resources/저장소/<저장소 이름>.md`를 만들거나 갱신한다(개요·위치·스택·기능·구조와 흐름·현재 상태·주요 결정·다음 할 일). 별도 하위 에이전트(sonnet)로 돈다. `area`는 `local.md` "저장소 노트"의 회사 프로젝트 폴더 기준으로 정한다. `.env`·키 파일처럼 비밀이 든 파일은 열지 않는다 |
+
+### 설치가 바꾸는 파일과 확인
+
+- `~/.claude/hooks/`: `brain_common.py`, `brain-journal.py`, `brain-dream.py`, `brain-lint-reminder.py`. 실행 기록은 같은 폴더의 `brain-*.log`다.
+- `~/.claude/skills/inbox/`, `~/.claude/skills/init-project/`.
+- `~/.claude/settings.json`: `hooks`의 `SessionStart`(lint-reminder → dream)와 `SessionEnd`(journal)에 그룹을 하나씩 더한다(`python "$HOME/.claude/hooks/<이름>.py"`, timeout 10초. `install.sh`는 `python3`가 되면 `python3`). 같은 등록이 이미 있으면 건드리지 않고, 예전 등록이 겹쳐 있으면 하나로 정리한다. 다른 hook과 설정은 그대로 둔다.
+- `~/.claude/CLAUDE.md`: 끝에 `<!-- brain:start -->` ~ `<!-- brain:end -->` 구역([tools/brain-claude-md.md](../tools/brain-claude-md.md))을 더한다. 구역이 이미 있으면 건드리지 않는다(승인한 규칙이 들어 있을 수 있다).
+- 고치기 전에 원본을 `settings.json.bak-<날짜시각>`, `CLAUDE.md.bak-<날짜시각>`으로 남긴다. 바꿀 것이 없으면 백업도 만들지 않는다. `settings.json`이 올바른 JSON이 아니면 아무것도 고치지 않고 멈춘다.
+- 상태·대기열·잠금은 `~/.second-brain/state/`(볼트 밖, 동기화되지 않음)에 둔다.
+
+**확인**: Claude Code 새 세션에서 대화를 몇 번 주고받은 뒤 끝낸다. 1분쯤 뒤 볼트의 `10_Daily/Journal/<오늘> 세션.md`에 줄이 생기면 된다. 생기지 않으면 `~/.claude/hooks/brain-journal.log`를 본다(`로그인 필요로 중단`이면 `claude auth login`). 등록된 hook은 Claude Code의 `/hooks`에서도 볼 수 있다. 일지의 날짜·시각은 `config.json`의 `utc_offset`(기본 9)을 따른다.
+
+지우는 법은 [README의 지우기](../README.md#지우기)에 있다.
+
 ## sb.py 명령 참고
 
 `sb.py`는 Python 3.9+ 표준 라이브러리만 쓴다. 노트 내용은 판단하지 않고 기계적인 일만 한다.
@@ -411,14 +463,16 @@ alias sb='python3 ~/.claude/skills/second-brain/scripts/sb.py'
 | `sb init <새 폴더>` | 스타터 볼트를 만들고 경로를 `~/.second-brain/config.json`에 저장한다. 이미 `.md` 노트가 있는 폴더는 거부한다. 경로가 너무 길어 만들지 못하면 더 짧은 폴더를 쓰라고 안내하고 멈춘다. 환경변수 `SECOND_BRAIN`이 설정되어 있으면 그쪽 볼트가 계속 쓰인다고 경고한다 |
 | `sb setup <기존 볼트>` | 기존 볼트 경로를 저장한다. `AGENTS.md`가 없으면 스타터 `AGENTS.md`의 절대 경로를, 템플릿이 없으면 복사해 올 폴더(설치된 스킬의 `assets/starter-vault/99_System/Templates`)를 알려 준다. `init`처럼 `SECOND_BRAIN` 경고도 한다 |
 | `sb where` | 지금 쓰는 볼트(`vault`), Obsidian 볼트 루트(`obsidian_root`), `AGENTS.md`(`agents_md`)·`config.json`(`config`)·`local.md`(`local_md`)의 위치와 존재 여부, 지금 실행한 스킬 폴더(`skill`). 볼트가 설정되지 않았으면 이 `sb.py`의 절대 경로로 `init`·`setup` 명령을 안내한다 |
-| `sb today [--date YYYY-MM-DD]` | 날짜와 요일, 현재 시각, ISO 주차와 그 주 월~일, 어제·내일 날짜(`prev`·`next`), 일일·주간 노트 경로와 존재 여부, `today_sources`. 날짜 형식이 틀리면 `날짜는 YYYY-MM-DD 형식이어야 합니다: <값>`으로 멈춘다 |
+| `sb today [--date YYYY-MM-DD]` | 날짜와 요일, 현재 시각, ISO 주차와 그 주 월~일, 어제·내일 날짜(`prev`·`next`), 일일·주간 노트와 세션 일지(`journal`, hook이 쓰는 파일) 경로와 존재 여부, `today_sources`. 날짜 형식이 틀리면 `날짜는 YYYY-MM-DD 형식이어야 합니다: <값>`으로 멈춘다 |
 | `sb render <템플릿> [--title T]` | 템플릿의 Templater 구문을 실제 값으로 바꾼 본문을 출력한다(파일은 쓰지 않는다). 이름에 `/`·`\`·`..`가 있으면 거부한다. 제외·비밀 템플릿은 `제외된 템플릿 경로`, 미허용 외부 템플릿은 `읽기 허용 범위 밖`으로 구분한다. 공유 템플릿 폴더는 `read_outside`에 추가할 수 있다. 접근 오류는 `템플릿을 읽을 수 없습니다`로 종료한다. 템플릿 이름: `Daily`(제목은 `YYYY-MM-DD`), `Weekly`(제목은 `YYYY-Www`), `Project`, `Fix`, `Resource`, `Note`, `Inbox` |
 | `sb new <종류> [제목] [--date D] [--dry-run]` | 템플릿으로 새 노트를 만든다. `daily`·`weekly`는 제목을 생략하면 오늘(또는 `--date`) 기준으로 정한다. 나머지는 제목이 필요하다(공백만 있으면 `제목이 필요합니다.`). 볼트 어디든 같은 이름(대소문자 무시)이 있거나, 제목에 금지 문자나 비밀 파일 단어가 있으면 거부한다(아래). 경로가 너무 길어 파일을 만들지 못하면 제목을 줄이거나 볼트를 더 짧은 경로로 옮기라고 안내한다. `--dry-run`은 경로와 내용만 출력한다 |
-| `sb tasks [--older N]` | 일일 노트와 `status: active` 프로젝트의 미완료 `- [ ]` 할 일. 비밀 파일 이름과 `exclude` 경로는 건너뛴다. `--older N`은 N일보다 오래된 일일 노트 항목만 |
+| `sb tasks [--older N]` | 일일 노트와 `status: active` 프로젝트의 미완료 `- [ ]` 할 일. 저장소 노트(`40_Resources/저장소/`, `type: repo`)의 할 일은 `저장소`로 표시한다. 비밀 파일 이름과 `exclude` 경로는 건너뛴다. `--older N`은 N일보다 오래된 일일 노트 항목만 |
 | `sb stale [--days 14]` | 파일 수정 시각 기준으로 N일 넘게 손대지 않은 `status: active` 프로젝트. 비밀 파일 이름과 `exclude` 경로는 건너뛴다 |
 | `sb tags` | frontmatter의 `tags`에 적은 태그와 개수(`99_System` 제외). 한 줄 목록(`['a', "b"]`)과 여러 줄 목록의 항목은 양끝의 같은 따옴표를 벗겨 집계한다. 본문의 `#태그`는 세지 않는다 |
 | `sb backlinks <노트 이름>` | 그 노트를 `[[링크]]`하는 파일. `.md` 확장자 유무와 대소문자를 구분하지 않는다. 볼트와 `config.json`의 `read_outside` 폴더만 읽고, 같은 실제 파일은 한 번만 출력한다. 실제 경로가 볼트 밖이면 "볼트 밖(고치지 말고 보고)"으로 표시한다 |
 | `sb lint [파일...]` | 형식 점검. 링크 존재 여부와 고아 노트 판정은 `.md` 확장자 유무와 대소문자를 구분하지 않는다. 파일을 주지 않으면 볼트 전체. 파일을 직접 지정해도 제외 대상이나 미허용 외부 경로면 읽지 않고 건너뛴다. 없는 파일을 주면 `파일 없음: <경로>`로 멈춘다 |
+| `sb index [--quiet]` | `99_System/색인.md`를 다시 만든다. 폴더별 노트 이름·태그·한 줄 요약(해결 기록은 `## 현상`, 프로젝트는 `## 목표`, 참고 자료는 `## 요약`의 첫 줄, 맨 위에 `> 보관:`이 있으면 그 이유)을 적고, 일일·주간·세션 일지는 개수와 최근 3개만, 노트가 50개 넘는 폴더는 이름만 적는다. `99_System/`은 넣지 않는다. 바뀐 게 없으면 쓰지 않는다(`색인 변경 없음`). hook을 설치했으면 세션 시작 때 자동으로 돈다 |
+| `sb log <ingest\|query\|lint> <제목> [--source S] [--pages 노트...] [--note M]` | `99_System/브레인 로그.md` 끝에 `## [YYYY-MM-DD] 종류 \| 제목`과 `- 원본:`·`- 고친 노트: [[...]]`·`- 메모:` 줄을 덧붙인다(파일이 없으면 머리말과 함께 만든다). 종류는 ingest(인박스·자료 반영)·query(답을 노트로 남김)·lint(점검) 셋뿐이다. 비밀정보로 보이는 문자열이 있으면 쓰지 않고 멈춘다 |
 
 `new`의 종류와 기본 폴더:
 
@@ -431,10 +485,11 @@ alias sb='python3 ~/.claude/skills/second-brain/scripts/sb.py'
 | `resource` | `Resource` | `40_Resources/참고 자료` | `<제목>.md` |
 | `note` | `Note` | `50_Notes` | `<제목>.md` |
 | `inbox` | `Inbox` | `00_Inbox` | `<제목>.md` |
+| `repo` | `Repo`(볼트에 없으면 `sb.py` 내장 틀) | `40_Resources/저장소` | `<제목>.md` |
 
 제목에는 파일 이름에 쓸 수 없는 `/ \ : * ? " < > |`와 `[[링크]]`를 깨뜨리는 `# ^ [ ]`를 쓸 수 없다(`제목에 / \ : * ? " < > | # ^ [ ] 를 쓸 수 없습니다(파일 이름·링크가 깨짐): <제목>`). 토큰·비번·비밀번호·password·passwd·token·secret·credential이 든 제목도 거부된다. 영어 단어는 단어 단위로 보고(`Tokenizer`는 통과), 한국어는 글자가 붙어 있어도 걸린다(`토큰화`도 거부)([주의](#다른-프로젝트-작업-중에-쓰기)).
 
-`lint`가 보는 것: frontmatter가 있는지, frontmatter 값의 따옴표 없는 `[[링크]]`(예: `area: [[업무]]` → `frontmatter 'area'의 [[링크]]에 따옴표 필요`), `type` 값, `created` 형식(`YYYY-MM-DDTHH:mm`), 프로젝트 `status`(`active`·`done`·`paused`), 첫 제목(`# `)과 파일 이름이 같은지(주간 노트 제외), 파일 이름 금지 문자, 남은 `<%`·`[[undefined]]`·frontmatter 값 `undefined`, 비밀정보로 보이는 문자열, 깨진 `[[링크]]`, 고아 노트(들어오고 나가는 링크가 없는 노트. 인박스·일일·주간 노트는 제외). 날짜 링크(`[[YYYY-MM-DD]]`)는 일일·주간 노트에서만 아직 없는 날짜를 가리켜도 건너뛰고, 다른 노트에서는 그 날짜의 노트가 없으면 깨진 링크로 잡는다. 본문의 제목·링크 자리에 들어간 `undefined`나 `Invalid date`는 "제목(H1) ≠ 파일 이름"이나 "깨진 링크"로만 보이고, 주간 노트의 `start`·`end` 값과 형식은 맞지만 틀린 `created` 값은 보지 않는다. `99_System/`과 `AGENTS.md`·`CLAUDE.md`·`GEMINI.md`는 건너뛰고 개수 N에도 넣지 않는다(파일을 지정했으면 `건너뜀(점검 대상 아님: ...)` 줄을 출력한다 — 템플릿을 고쳤으면 `sb.py new`로 노트를 하나 만들어 그 노트를 점검한다). 전체 순회 중 제외되거나 읽을 수 없는 경로는 후보 목록에 넣지 않는다. 후보 수집 이후 전체 점검 중 사라지거나 읽기에 실패한 파일은 `경로<탭>읽을 수 없는 파일(건너뜀)`으로 알리고 계속한다. 파일을 직접 지정했을 때 처음부터 없으면 `파일 없음`으로 종료하며, 제외·미허용·파일 상태 검사에서 접근 오류가 난 경로는 `경로<탭>제외된 경로(읽지 않음)`으로 건너뛴다. 존재 확인 후 내용 읽기가 실패한 경우에는 전체·지정 점검 모두 `경로<탭>읽을 수 없는 파일(건너뜀)`을 출력한다. 건너뛴 파일은 점검 개수에 넣지 않는다. 볼트 루트 자체를 읽을 수 없으면 `볼트 폴더를 읽을 수 없습니다`로 종료한다. 문제마다 `경로<탭>내용`을 출력하고 마지막 줄에 `점검(볼트 전체) N개, 문제 M건`(파일을 지정했으면 `점검(지정한 파일) N개, 문제 M건`)을 쓴다. 문제가 있으면 종료 코드가 1이다.
+`lint`가 보는 것: frontmatter가 있는지, frontmatter 값의 따옴표 없는 `[[링크]]`(예: `area: [[업무]]` → `frontmatter 'area'의 [[링크]]에 따옴표 필요`), `type` 값, `created` 형식(`YYYY-MM-DDTHH:mm`), 프로젝트 `status`(`active`·`done`·`paused`), 첫 제목(`# `)과 파일 이름이 같은지(주간 노트 제외), 파일 이름 금지 문자, 남은 `<%`·`[[undefined]]`·frontmatter 값 `undefined`, 비밀정보로 보이는 문자열, 깨진 `[[링크]]`, 고아 노트(들어오고 나가는 링크가 없는 노트. 인박스·일일·주간·세션 일지·dream 제안은 제외, `99_System/` 노트의 링크는 들어오는 링크로 치지 않는다), 남은 충돌 표시(`> 충돌:` 줄, 코드 블록 안은 제외). 날짜 링크(`[[YYYY-MM-DD]]`)는 일일·주간 노트와 세션 일지에서만 아직 없는 날짜를 가리켜도 건너뛰고, 다른 노트에서는 그 날짜의 노트가 없으면 깨진 링크로 잡는다. 본문의 제목·링크 자리에 들어간 `undefined`나 `Invalid date`는 "제목(H1) ≠ 파일 이름"이나 "깨진 링크"로만 보이고, 주간 노트의 `start`·`end` 값과 형식은 맞지만 틀린 `created` 값은 보지 않는다. `99_System/`과 `AGENTS.md`·`CLAUDE.md`·`GEMINI.md`는 건너뛰고 개수 N에도 넣지 않는다(파일을 지정했으면 `건너뜀(점검 대상 아님: ...)` 줄을 출력한다 — 템플릿을 고쳤으면 `sb.py new`로 노트를 하나 만들어 그 노트를 점검한다). 전체 순회 중 제외되거나 읽을 수 없는 경로는 후보 목록에 넣지 않는다. 후보 수집 이후 전체 점검 중 사라지거나 읽기에 실패한 파일은 `경로<탭>읽을 수 없는 파일(건너뜀)`으로 알리고 계속한다. 파일을 직접 지정했을 때 처음부터 없으면 `파일 없음`으로 종료하며, 제외·미허용·파일 상태 검사에서 접근 오류가 난 경로는 `경로<탭>제외된 경로(읽지 않음)`으로 건너뛴다. 존재 확인 후 내용 읽기가 실패한 경우에는 전체·지정 점검 모두 `경로<탭>읽을 수 없는 파일(건너뜀)`을 출력한다. 건너뛴 파일은 점검 개수에 넣지 않는다. 볼트 루트 자체를 읽을 수 없으면 `볼트 폴더를 읽을 수 없습니다`로 종료한다. 문제마다 `경로<탭>내용`을 출력하고 마지막 줄에 `점검(볼트 전체) N개, 문제 M건`(파일을 지정했으면 `점검(지정한 파일) N개, 문제 M건`)을 쓴다. 문제가 있으면 종료 코드가 1이다.
 
 **템플릿을 고칠 때**: `sb.py`가 바꿀 수 있는 Templater 구문은 다음뿐이다. 이 밖의 구문을 넣으면 `처리할 수 없는 Templater 구문`으로 멈추고 파일을 쓰지 않는다.
 

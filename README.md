@@ -2,7 +2,7 @@
 
 > Build an Obsidian second brain (PARA + permanent notes) from scratch, and let AI agents like Claude Code and Codex read and write it through a `second-brain` skill.
 
-세컨드 브레인이 아예 없는 사람도 이 저장소를 따라 하면 Obsidian 볼트(노트 폴더)를 만들고, Claude Code나 Codex 같은 AI 에이전트에게 "메모해 둬", "주간 리뷰 해줘", "전에 이거 해결한 적 있나"처럼 말로 부탁해 그 볼트를 읽고 쓰게 할 수 있다. 볼트는 내 컴퓨터에 있는 평범한 Markdown 파일이라 앱이나 서비스에 묶이지 않는다. 키트는 세 부분으로 되어 있다. 바로 쓸 수 있는 스타터 볼트, AI가 볼트 규칙을 지키며 일하게 하는 `second-brain` 스킬, 날짜 계산·템플릿 채우기·점검을 맡는 보조 도구 `sb.py`다.
+세컨드 브레인이 아예 없는 사람도 이 저장소를 따라 하면 Obsidian 볼트(노트 폴더)를 만들고, Claude Code나 Codex 같은 AI 에이전트에게 "메모해 둬", "주간 리뷰 해줘", "전에 이거 해결한 적 있나"처럼 말로 부탁해 그 볼트를 읽고 쓰게 할 수 있다. 볼트는 내 컴퓨터에 있는 평범한 Markdown 파일이라 앱이나 서비스에 묶이지 않는다. 키트는 세 부분으로 되어 있다. 바로 쓸 수 있는 스타터 볼트, AI가 볼트 규칙을 지키며 일하게 하는 `second-brain` 스킬, 날짜 계산·템플릿 채우기·점검을 맡는 보조 도구 `sb.py`다. Claude Code에는 세션마다 한 줄 일지를 남기고 대화에서 작업 규칙 제안(dream)을 골라 주는 [자동 기록](#자동-기록-claude-code)도 함께 설치된다.
 
 ## 이런 분께
 
@@ -83,7 +83,7 @@
 |---|---|---|
 | [Obsidian](https://obsidian.md) | 노트를 보고 쓰는 앱 | 앱이 열린다 |
 | Claude Code 또는 Codex | 말로 부탁하는 AI 에이전트 | 터미널에서 실행된다 |
-| [Python](https://www.python.org/downloads/) 3.9 이상 | 보조 도구 `sb.py` 실행(표준 라이브러리만 쓴다) | `python --version`(macOS·Linux는 `python3 --version`. Windows Git Bash에서는 bash 예시의 `python3` 대신 `python`) |
+| [Python](https://www.python.org/downloads/) 3.9 이상 | 보조 도구 `sb.py`와 Claude Code hook 실행(표준 라이브러리만 쓴다) | `python --version`(macOS·Linux는 `python3 --version`. Windows Git Bash에서는 bash 예시의 `python3` 대신 `python`) |
 | Git(선택) | 이 저장소 내려받기, 볼트 백업 | `git --version` |
 
 ## 설치
@@ -106,8 +106,9 @@ bash install.sh --codex   # Claude Code와 Codex 둘 다
 ```
 
 - 하는 일: `skills/second-brain` 폴더를 `~/.claude/skills/second-brain`으로 복사한다. 옵션을 주면 Codex의 사용자 스킬 폴더 `~/.agents/skills/second-brain`에도 복사한다. 스타터 볼트도 이 안(`assets/starter-vault`)에 함께 들어간다.
+- Claude Code에는 [자동 기록](#자동-기록-claude-code)도 설치한다: hook 파일을 `~/.claude/hooks/`에, `/inbox`·`/init-project` 스킬을 `~/.claude/skills/`에 복사하고, `~/.claude/settings.json`에 hook을 등록하고, 전역 `~/.claude/CLAUDE.md` 끝에 `<!-- brain:start -->` 구역을 더한다. 두 파일은 고칠 것이 있을 때만 원본을 `.bak-<날짜시각>`으로 남기고 고친다. 이 단계는 `python`(macOS·Linux는 `python3`)으로 [tools/claude_setup.py](tools/claude_setup.py)를 실행한다.
 - `-ExecutionPolicy Bypass`는 그 한 번의 실행에만 적용된다. PC의 실행 정책 설정은 바꾸지 않는다.
-- 다시 실행해도 된다: 설치된 스킬 파일만 새로 복사한다. 개인 설정(`~/.second-brain/`의 `config.json`·`local.md`)은 건드리지 않는다.
+- 다시 실행해도 된다: 스킬·hook 파일을 새로 복사하고, hook 등록과 `CLAUDE.md` 구역은 이미 있으면 그대로 둔다(중복으로 더하지 않는다). 개인 설정(`~/.second-brain/`의 `config.json`·`local.md`)은 건드리지 않는다.
 - 확인: 끝에 `Installed: <설치 경로>`가 출력되고, 그 폴더에 `SKILL.md`와 `scripts/sb.py`가 있다. 이어서 `Next:` 줄에 볼트를 만들거나 연결하는 `sb.py` 명령이 나온다(`install.sh`는 `python3`가 실행되지 않는 환경, 예: Windows Git Bash에서는 `python`으로 보여 준다). 자세한 확인 방법은 [docs/AI와-함께-쓰기.md](docs/AI와-함께-쓰기.md#설치-확인)에 있다.
 
 ## 말로 부탁하기
@@ -130,6 +131,11 @@ AI 에이전트(스킬을 설치한 Claude Code나 Codex)에게 이렇게 말한
 | "볼트에서 ○○ 노트를 90_Archive로 옮겨줘" | 지우지 않고 보관 폴더로 옮긴다 | `90_Archive/` |
 | "볼트 기준으로 ○○ 알려줘" | 볼트에서 찾아 근거 노트 링크와 함께 답한다. 없으면 "볼트에 없음"이라고 먼저 말한다 | (읽기만) |
 | "전에 이거 해결한 적 있나" | 해결 기록부터 찾아 답한다 | (읽기만) |
+| "기억해: ○○", "브레인에 넣어" | 지식·사실·결정이면 같은 주제 노트를 찾아 고치거나 맞는 폴더에 새로 쓴다. AI의 작업 방식에 대한 교정이면 볼트가 아니라 에이전트 메모리에 둔다 | 해당 노트, `99_System/브레인 로그.md` |
+| (분석·비교·웹 조사 답 끝의) "브레인에 남길까요?"에 "응" | 같은 주제 노트를 찾아 고치거나 새로 쓰고 출처를 단다 | 해당 노트, `99_System/브레인 로그.md` |
+| "세컨드 브레인 점검" | 색인을 다시 만들고 `sb lint`로 깨진 링크·고아·비밀정보·남은 `> 충돌:`을 찾아 형식 문제는 고친다. 낡은 내용·방치 프로젝트는 목록으로만 보고한다 | `99_System/색인.md`, `99_System/브레인 로그.md` |
+| `/inbox`, `/inbox 같이` (Claude Code) | 인박스를 나와 함께 정리하고, dream 규칙 제안은 번호별로 승인받아 반영한다 | 각 폴더, 전역 `CLAUDE.md` 또는 프로젝트 메모리 |
+| `/init-project [경로]` (Claude Code) | 코드 저장소를 읽기만 하고 저장소 노트를 만들거나 갱신한다 | `40_Resources/저장소/` |
 
 AI는 매번 볼트의 `AGENTS.md`를 먼저 읽고 그 규칙을 따른다. 규칙이 서로 다르면 **사용자의 그때그때 지시 > `AGENTS.md` > `local.md` > 나의 판단 방식 노트 > 스킬 기본값** 순으로 따른다. 기록할 대상이 애매하면 쓰기 전에 먼저 묻고, 쓴 뒤에는 바꾼 파일을 점검한 실제 결과로 보고한다. 읽기만 했으면 `볼트 변경: 없음(읽기 전용)`이라고 적는다. 자세한 동작은 [docs/AI와-함께-쓰기.md](docs/AI와-함께-쓰기.md#요청별로-ai가-실제로-하는-일)에 있다.
 
@@ -142,13 +148,62 @@ PARA(Tiago Forte의 분류법)에 영구 노트 폴더를 더한 구조다.
 | `00_Inbox/` | 빠르게 적은 메모, 링크, 생각. 분류 전 상태 | 정리 후 아래 폴더로 |
 | `10_Daily/` | 일일 노트 `YYYY-MM-DD.md` | 그대로 보관 |
 | `10_Daily/Weekly/` | 주간 리뷰 `YYYY-Www.md`(예: `2026-W42.md`) | 그대로 보관 |
+| `10_Daily/Journal/` | 세션 일지 `YYYY-MM-DD 세션.md`(Claude Code hook이 자동으로 쓴다) | 그대로 보관 |
 | `20_Projects/` | 끝나는 날이나 완료 조건이 있는 일 | 끝나면 `90_Archive/` |
 | `30_Areas/` | 계속 관리하는 책임 영역(업무, 학습, 건강, 재무 등)과 `나의 판단 방식` | 그대로 유지 |
 | `40_Resources/해결 기록/` | 해결한 문제의 현상·원인·변경·검증 | 그대로 유지 |
 | `40_Resources/참고 자료/` | 주제별 참고 자료, 요약, 스니펫 | 그대로 유지 |
+| `40_Resources/저장소/` | 코드 저장소 하나당 노트 하나(`/init-project`) | 그대로 유지 |
 | `50_Notes/` | 내 말로 정리한 생각 하나짜리 영구 노트 | 그대로 유지 |
 | `90_Archive/` | 끝난 프로젝트, 쓰지 않는 노트, 정리가 끝난 인박스 원본 | — |
-| `99_System/` | `Templates/`(노트 틀), `Routines/`(예약 실행용 프롬프트) | — |
+| `99_System/` | `Templates/`(노트 틀), `Routines/`(예약 실행용 프롬프트), `색인.md`(자동 생성 목록), `브레인 로그.md`(작업 기록) | — |
+
+## 자동 기록 (Claude Code)
+
+Claude Code에 설치하면 hook 세 개가 볼트에 기록을 쌓는다. 저절로 쌓이는 것은 아래 셋뿐이고, 규칙은 내가 승인한 것만 들어간다.
+
+| 언제 | 무엇을 | 어디에 |
+|---|---|---|
+| 세션이 끝날 때 | 그 세션에서 한 일을 한 줄로 요약 | `10_Daily/Journal/YYYY-MM-DD 세션.md` |
+| 하루 한 번(세션 시작 때) | 대화에서 내가 AI를 교정하거나 선호를 밝힌 대목을 골라 규칙 **제안** | `00_Inbox/YYYY-MM-DD dream 규칙 제안.md` → `/inbox`에서 승인한 것만 전역 `CLAUDE.md`의 `# 배운 규칙 (dream)` 또는 프로젝트 메모리로 |
+| 세션 시작 때 | 볼트 색인을 다시 만들고, dream 제안 대기·점검 7일 경과·로그인 풀림을 하루 한 번 알림 | `99_System/색인.md`, 세션 맥락의 `[brain]` 줄 |
+
+- **터미널 CLI 로그인이 필요하다.** 요약은 `claude -p --model haiku`(도구 없음)로 하므로 터미널에서 `claude auth login`을 한 번 해 둔다. 데스크톱 앱 로그인과는 따로다. 로그인 전에는 대기열에 쌓였다가 로그인 뒤 처리된다.
+- **대화 일부가 요약 모델로 간다.** 사람이 친 말과 Claude의 글(도구 결과 제외)이 비밀정보 패턴을 가린 뒤 내 Claude 계정으로 보내지고, 사용량도 그 계정에서 쓴다. 일지·dream 파일은 볼트 노트라 볼트를 백업하면 함께 올라간다. 빼고 싶은 작업 폴더는 `~/.second-brain/config.json`의 `journal_exclude`에 적는다.
+- 자세한 동작·보내는 내용·바뀌는 파일·확인 방법은 [docs/AI와-함께-쓰기.md](docs/AI와-함께-쓰기.md#자동-기록-claude-code-hook)에 있다.
+
+## 지우기
+
+Claude Code 자동 기록만 끄려면 저장소 폴더에서 hook 등록을 뺀다. `settings.json`의 다른 설정은 그대로 두고, 바꾸기 전 원본은 `.bak-<날짜시각>`으로 남는다.
+
+```powershell
+# Windows (PowerShell)
+python tools\claude_setup.py remove
+```
+
+```bash
+# macOS / Linux (Windows Git Bash에서는 python3 대신 python)
+python3 tools/claude_setup.py remove
+```
+
+이어서 필요하면 파일을 직접 지운다. 같은 이름의 다른 스킬을 쓰고 있지 않은지 먼저 확인한다.
+
+```powershell
+# Windows (PowerShell)
+Remove-Item "$HOME\.claude\hooks\brain_common.py", "$HOME\.claude\hooks\brain-*.py", "$HOME\.claude\hooks\brain-*.log"
+Remove-Item -Recurse "$HOME\.claude\skills\inbox", "$HOME\.claude\skills\init-project", "$HOME\.second-brain\state"
+Remove-Item -Recurse "$HOME\.claude\skills\second-brain"   # 스킬까지 모두 지울 때
+```
+
+```bash
+# macOS / Linux / Windows Git Bash
+rm -f ~/.claude/hooks/brain_common.py ~/.claude/hooks/brain-*.py ~/.claude/hooks/brain-*.log
+rm -rf ~/.claude/skills/inbox ~/.claude/skills/init-project ~/.second-brain/state
+rm -rf ~/.claude/skills/second-brain   # 스킬까지 모두 지울 때
+```
+
+- 전역 `~/.claude/CLAUDE.md`의 `<!-- brain:start -->` ~ `<!-- brain:end -->` 구역은 내가 승인한 규칙이 들어 있어 자동으로 지우지 않는다. 필요 없으면 편집기로 그 구역을 지운다.
+- `~/.second-brain/`의 `config.json`·`local.md`(볼트 경로·개인 설정)와 볼트의 노트(세션 일지·dream 제안 포함)는 지우지 않는다. Codex에 설치했다면 `~/.agents/skills/second-brain`도 지운다.
 
 ## 안전 원칙
 
@@ -166,15 +221,18 @@ PARA(Tiago Forte의 분류법)에 영구 노트 폴더를 더한 구조다.
 | `README.md` | 이 문서 |
 | `docs/세컨드-브레인-만들기.md` | 입문 가이드: 준비물부터 첫 주 리듬까지 |
 | `docs/AI와-함께-쓰기.md` | 스킬 설치·연결·개인 설정, 요청별 동작, 자동 루틴, `sb.py` 명령 참고 |
-| `install.ps1`, `install.sh` | 스킬 설치 스크립트(Windows / macOS·Linux) |
+| `install.ps1`, `install.sh` | 설치 스크립트(Windows / macOS·Linux): 스킬 복사와 Claude Code 자동 기록 설치 |
 | `skills/second-brain/SKILL.md` | AI 에이전트가 읽는 스킬 본문 |
 | `skills/second-brain/references/` | 기록하기(`capture.md`)·찾기(`search.md`) 세부 절차 |
 | `skills/second-brain/scripts/sb.py` | 보조 도구: 볼트 만들기·연결, 날짜, 템플릿 채우기, 할 일·태그·링크 점검 |
 | `skills/second-brain/local.example.md` | 개인 설정 `local.md`의 예시. `~/.second-brain/local.md`로 복사해 쓴다 |
 | `skills/second-brain/assets/starter-vault/` | 스타터 볼트: `AGENTS.md`, `Home.md`, 템플릿, 루틴 프롬프트 |
+| `skills/inbox/`, `skills/init-project/` | Claude Code에서 직접 부르는 `/inbox`(인박스·dream 제안 승인), `/init-project`(저장소 노트) |
+| `hooks/` | Claude Code hook: 세션 일지(`brain-journal.py`), dream·색인(`brain-dream.py`), 안내 줄(`brain-lint-reminder.py`), 공용 코드(`brain_common.py`) |
+| `tools/claude_setup.py`, `tools/brain-claude-md.md` | hook·전용 스킬 복사와 `settings.json`·`CLAUDE.md` 고치기(설치 스크립트가 부른다), `CLAUDE.md`에 더하는 구역 |
 | `LICENSE` | MIT 라이선스 |
 
-테스트: 저장소 루트에서 `python -m unittest discover -s tests -v`를 실행한다(표준 라이브러리만 사용, macOS·Linux는 `python3`).
+테스트: 저장소 루트에서 `python -m unittest discover -s tests -v`를 실행한다(표준 라이브러리만 사용, macOS·Linux는 `python3`). `sb.py` 시험, 설치 보조 스크립트 시험(임시 폴더의 가짜 `~/.claude`), hook 시나리오(`tests/brain_hooks_scenario.py`를 별도 프로세스로, 가짜 모델·합성 대화 기록·임시 볼트)가 함께 돈다. 실제 `~/.claude`·`~/.second-brain`·볼트는 건드리지 않는다.
 
 성능 비교: `python tests/benchmark_sb.py`는 격리된 임시 볼트에 노트 2,000개와 첨부 1,000개를 만들어 `origin/main`과 현재 작업 트리를 비교한다. 다른 버전은 `--refs REF worktree`로 지정하며, 결과 JSON의 임시 경로는 `<tmp>`로 표시한다.
 

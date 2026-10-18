@@ -919,6 +919,75 @@ class SecondBrainTests(unittest.TestCase):
         path.write_text('---\ntype: inbox\ntags: trailing"\ncreated: 2026-10-01T09:00\n---\n', encoding="utf-8")
         self.assertIn('trailing"\t1', self.sb("tags"))
 
+    def test_index_lists_notes_and_rewrites_only_on_change(self):
+        fix = self.vault / "40_Resources/해결 기록/로그인 오류.md"
+        fix.write_text("---\ntype: fix\narea: \"[[업무]]\"\ntags: [db]\ncreated: 2026-10-01T09:00\n---\n"
+                       "# 로그인 오류\n\n## 현상\n- 로그인 버튼이 `반응` 없음\n", encoding="utf-8")
+        self.assertIn("색인 갱신", self.sb("index"))
+        index = self.vault / "99_System/색인.md"
+        text = index.read_text(encoding="utf-8")
+        self.assertIn("## 40_Resources/해결 기록 (1)", text)
+        self.assertIn("- 로그인 오류 (`#db`) — 로그인 버튼이 반응 없음", text)
+        self.assertNotIn("## 99_System", text)
+        self.assertIn("색인 변경 없음", self.sb("index"))
+        self.assertEqual(self.sb("index", "--quiet").strip(), "색인: 변경 없음")
+        self.assertEqual(index.read_text(encoding="utf-8"), text)
+        self.assertIn("문제 0건", self.sb("lint"))
+
+    def test_log_appends_entries_and_refuses_secrets(self):
+        out = self.sb("log", "ingest", "자료 A", "--source", "https://example.com/a",
+                      "--pages", "노트 A", "[[노트 B]]", "--note", "메모")
+        self.assertRegex(out, r"logged: ## \[\d{4}-\d{2}-\d{2}\] ingest \| 자료 A")
+        self.sb("log", "lint", "점검")
+        log = self.vault / "99_System/브레인 로그.md"
+        text = log.read_text(encoding="utf-8")
+        self.assertEqual(text.count("# 브레인 로그\n"), 1)
+        self.assertEqual(len([l for l in text.splitlines() if l.startswith("## [")]), 2)
+        self.assertIn("- 원본: https://example.com/a\n- 고친 노트: [[노트 A]], [[노트 B]]\n- 메모: 메모\n", text)
+        self.assertIn("종류는", self.sb("log", "answer", "질문", exit_code=1))
+        self.assertIn("비밀정보", self.sb("log", "query", "조사", "--note", "password=hunter22", exit_code=1))
+        self.assertEqual(log.read_text(encoding="utf-8"), text)
+
+    def test_new_repo_note_uses_builtin_template_and_feeds_tasks(self):
+        self.assertIn("created:", self.sb("new", "repo", "shop-web"))
+        note = self.vault / "40_Resources/저장소/shop-web.md"
+        text = note.read_text(encoding="utf-8")
+        self.assertIn("type: repo", text)
+        self.assertNotIn("<%", text)
+        for heading in ("## 개요", "## 구조와 흐름", "## 주요 결정", "## 다음 할 일", "## 관련"):
+            self.assertIn(heading, text)
+        note.write_text(text.replace("## 다음 할 일\n", "## 다음 할 일\n- [ ] 배포 스크립트 정리\n"), encoding="utf-8")
+        self.assertIn("[[shop-web]]\t저장소\t배포 스크립트 정리", self.sb("tasks"))
+        self.assertNotIn("배포 스크립트 정리", self.sb("tasks", "--older", "1"))
+
+    def test_lint_flags_conflicts_and_accepts_hook_notes(self):
+        note = self.vault / "50_Notes/어긋난 주장.md"
+        note.write_text("---\ntype: note\ntags: []\ncreated: 2026-10-01T09:00\n---\n# 어긋난 주장\n"
+                        "[[업무]]\n> 충돌: 문서는 3회, 코드는 5회\n```\n> 충돌: 코드 안 예시\n```\n", encoding="utf-8")
+        out = self.sb("lint", str(note), exit_code=1)
+        self.assertIn("남은 충돌 표시: 문서는 3회, 코드는 5회", out)
+        self.assertNotIn("코드 안 예시", out)
+        journal = self.vault / "10_Daily/Journal/2026-10-16 세션.md"
+        journal.parent.mkdir(parents=True)
+        journal.write_text("---\ntype: journal\ntags: []\ncreated: 2026-10-16T09:05\n---\n# 2026-10-16 세션\n\n"
+                           "← [[2026-10-16]] · 자동 일지\n\n- 09:05 [shop-web] 요약\n", encoding="utf-8")
+        dream = self.vault / "00_Inbox/2026-10-16 dream 규칙 제안.md"
+        dream.write_text("---\ntype: dream\ntags: []\ncreated: 2026-10-16T09:05\n---\n"
+                         "# 2026-10-16 dream 규칙 제안\n\n## 1. 추가 · 전역\n- 규칙: r\n", encoding="utf-8")
+        self.assertIn("점검(지정한 파일) 2개, 문제 0건", self.sb("lint", str(journal), str(dream)))
+
+    def test_links_from_system_notes_do_not_rescue_orphans(self):
+        lonely = self.vault / "50_Notes/외딴 생각.md"
+        lonely.write_text("---\ntype: note\ntags: []\ncreated: 2026-10-01T09:00\n---\n# 외딴 생각\n본문\n", encoding="utf-8")
+        (self.vault / "99_System/브레인 로그.md").write_text(
+            "---\ntype: system\ntags: []\ncreated: 2026-10-01T09:00\n---\n# 브레인 로그\n\n"
+            "## [2026-10-01] ingest | x\n- 고친 노트: [[외딴 생각]]\n", encoding="utf-8")
+        self.assertIn("고아 노트", self.sb("lint", str(lonely), exit_code=1))
+
+    def test_today_shows_journal_path(self):
+        out = self.sb("today", "--date", "2026-10-16")
+        self.assertRegex(out, r"journal: .*2026-10-16 세션\.md  exists=False")
+
 
 if __name__ == "__main__":
     unittest.main()

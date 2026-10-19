@@ -22,7 +22,7 @@ LIST
 FROM "00_Inbox"
 SORT file.ctime ASC
 ```
-> 🤖 이름에 `dream`이 든 노트는 Claude가 대화에서 고른 규칙 제안이다(Claude Code hook을 설치했을 때). Claude Code에서 `/inbox`로 승인·거절한다.
+> 🤖 이름에 `dream`이 든 노트는 Claude가 대화에서 고른 규칙 제안이다(Claude Code hook을 설치했을 때). `점검 결과` 노트는 세컨드 브레인 점검에서 결정이 필요한 항목이다. 둘 다 Claude Code에서 `/inbox`로 처리한다.
 
 ## 🗒️ 최근 세션 일지 (자동)
 ```dataview
@@ -76,7 +76,7 @@ Claude Code·Codex 같은 AI 에이전트에서 이 볼트 폴더를 열거나, 
 - `볼트 기준으로 ○○ 알려줘`
 - `전에 이거 해결한 적 있나`
 - `기억해: ○○` / `브레인에 넣어` (어느 프로젝트 세션에서든)
-- `세컨드 브레인 점검` (깨진 링크·고아·남은 충돌·낡은 내용 점검. hook을 설치했으면 7일 넘을 때 Claude가 먼저 권한다)
-- Claude Code 전용: `/inbox` (인박스·dream 규칙 제안 승인, 함께 보려면 `/inbox 같이`) · `/init-project ~/code/shop-web` (저장소 노트)
+- `세컨드 브레인 점검` (깨진 링크·고아·남은 충돌·낡은 내용 점검. hook을 설치했으면 7일 넘을 때 Claude가 먼저 권한다. 결정이 필요한 항목은 `00_Inbox/YYYY-MM-DD 점검 결과`로 남긴다)
+- Claude Code 전용: `/inbox` (인박스·dream 규칙 제안 승인·점검 결과 결정, 함께 보려면 `/inbox 같이`) · `/init-project ~/code/shop-web` (저장소 노트)
 
 자동 목록: `99_System/색인.md` · 작업 기록: `99_System/브레인 로그.md` (처음 `sb.py index`·`sb.py log`를 실행할 때 생긴다)

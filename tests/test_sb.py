@@ -984,6 +984,46 @@ class SecondBrainTests(unittest.TestCase):
             "## [2026-10-01] ingest | x\n- 고친 노트: [[외딴 생각]]\n", encoding="utf-8")
         self.assertIn("고아 노트", self.sb("lint", str(lonely), exit_code=1))
 
+    def test_new_check_note_uses_builtin_template_and_refuses_same_name(self):
+        self.assertIn("created:", self.sb("new", "check", "2026-10-19 점검 결과"))
+        note = self.vault / "00_Inbox/2026-10-19 점검 결과.md"
+        text = note.read_text(encoding="utf-8")
+        self.assertRegex(text, r"^---\ntype: check\ntags: \[\]\ncreated: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}\n---\n")
+        self.assertIn("# 2026-10-19 점검 결과\n", text)
+        self.assertIn("`/inbox`", text)
+        self.assertNotIn("<%", text)
+        self.assertLess(text.index("## 결정 대기"), text.index("## 웹으로 채울 빈칸"))
+        self.assertLess(text.index("## 웹으로 채울 빈칸"), text.index("## 처리 결과"))
+        self.assertIn("이미 있습니다", self.sb("new", "check", "2026-10-19 점검 결과", exit_code=1))
+        self.assertIn("created:", self.sb("new", "check", "2026-10-19 점검 결과 2"))
+        self.assertIn("점검(지정한 파일) 1개, 문제 0건", self.sb("lint", str(note)))  # 링크가 없어도 고아가 아니다
+
+    def test_links_from_check_and_dream_notes_do_not_rescue_orphans(self):
+        lonely = self.vault / "50_Notes/외딴 생각.md"
+        lonely.write_text("---\ntype: note\ntags: []\ncreated: 2026-10-01T09:00\n---\n# 외딴 생각\n본문\n", encoding="utf-8")
+        check = self.vault / "00_Inbox/2026-10-19 점검 결과.md"
+        check.write_text("---\ntype: check\ntags: []\ncreated: 2026-10-19T10:00\n---\n# 2026-10-19 점검 결과\n\n"
+                         "## 결정 대기\n- [ ] [A1] [[외딴 생각]] — 고아 노트 · 선택지: 연결 / 보관\n", encoding="utf-8")
+        dream = self.vault / "00_Inbox/2026-10-19 dream 규칙 제안.md"
+        dream.write_text("---\ntype: dream\ntags: []\ncreated: 2026-10-19T09:05\n---\n# 2026-10-19 dream 규칙 제안\n\n"
+                         "## 1. 추가 · 전역\n- 근거: [[외딴 생각]]\n", encoding="utf-8")
+        out = self.sb("lint", str(lonely), str(check), str(dream), exit_code=1)
+        self.assertIn("외딴 생각.md\t고아 노트", out)
+        self.assertIn("점검(지정한 파일) 3개, 문제 1건", out)
+        inbox = self.vault / "00_Inbox/메모.md"
+        inbox.write_text("---\ntype: inbox\ntags: []\ncreated: 2026-10-19T10:00\n---\n[[외딴 생각]]\n", encoding="utf-8")
+        self.assertIn("문제 0건", self.sb("lint", str(lonely)))  # 다른 노트의 링크는 그대로 연결로 친다
+
+    def test_index_counts_only_pending_decisions_of_check_notes(self):
+        (self.vault / "00_Inbox/2026-10-19 점검 결과.md").write_text(
+            "---\ntype: check\ntags: []\ncreated: 2026-10-19T10:00\n---\n# 2026-10-19 점검 결과\n\n"
+            "> 결정 대기 2항목(지적 3건을 묶음)\n\n## 결정 대기\n\n### A. 상태\n"
+            "- [ ] [A1] [[x]] — 문제\n- [x] [A2] [[y]] — 문제 → 결정: 닫기 (2026-10-19)\n- [ ] [A3] [[z]] — 문제\n\n"
+            "## 웹으로 채울 빈칸\n- 조사 항목\n\n## 처리 결과\n- [ ] 이 줄은 세지 않는다\n", encoding="utf-8")
+        self.sb("index")
+        text = (self.vault / "99_System/색인.md").read_text(encoding="utf-8")
+        self.assertIn("- 2026-10-19 점검 결과 — 결정 대기 2건\n", text)
+
     def test_today_shows_journal_path(self):
         out = self.sb("today", "--date", "2026-10-16")
         self.assertRegex(out, r"journal: .*2026-10-16 세션\.md  exists=False")

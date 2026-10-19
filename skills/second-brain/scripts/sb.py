@@ -10,7 +10,7 @@
   python sb.py render <템플릿> [--title T]    Templater 구문을 실제 값으로 바꾼 본문 출력
   python sb.py new <종류> [제목] [--date D] [--dry-run]
                                              템플릿으로 새 노트 생성(같은 이름이 있으면 거부)
-                                             종류: daily weekly project fix note inbox resource repo
+                                             종류: daily weekly project fix note inbox resource repo check
   python sb.py tasks [--older N]             일일 노트·진행 중 프로젝트의 미완료 할 일
   python sb.py stale [--days 14]             N일 넘게 수정되지 않은 active 프로젝트
   python sb.py tags                          쓰고 있는 태그와 개수
@@ -83,6 +83,7 @@ KINDS = {  # 종류: (템플릿, 기본 폴더) — config.json "folders"로 폴
     "note": ("Note", "50_Notes"),
     "inbox": ("Inbox", "00_Inbox"),
     "repo": ("Repo", "40_Resources/저장소"),
+    "check": ("Check", "00_Inbox"),  # 점검 결과(사용자 결정 대기 체크리스트) — 제목 "YYYY-MM-DD 점검 결과"
 }
 # 볼트에 템플릿 파일이 없을 때만 쓰는 기본 구조
 BUILTIN = {
@@ -92,10 +93,17 @@ BUILTIN = {
     "Repo": '---\ntype: repo\narea:\ntags: []\ncreated: <% tp.date.now("YYYY-MM-DDTHH:mm") %>\n---\n'
             "# <% tp.file.title %>\n\n> \n\n## 개요\n\n## 위치\n\n## 스택\n\n## 기능\n\n## 구조와 흐름\n\n"
             "## 현재 상태\n\n## 주요 결정\n\n## 다음 할 일\n\n## 관련\n",
+    # 점검 결과("세컨드 브레인 점검"이 만든다). 처리는 /inbox 에서만, 무인 루틴은 건드리지 않는다.
+    "Check": '---\ntype: check\ntags: []\ncreated: <% tp.date.now("YYYY-MM-DDTHH:mm") %>\n---\n'
+             "# <% tp.file.title %>\n\n"
+             "> 🤖 세컨드 브레인 점검에서 사용자 결정이 필요한 항목이다. `/inbox`에서 하나씩 정한다. "
+             "정한 항목은 `- [x]`로 바꾸고 줄 끝에 `→ 결정: 내용 (YYYY-MM-DD)`를 단다. 무인 루틴은 이 파일을 처리하지 않는다.\n\n"
+             "## 결정 대기\n\n## 웹으로 채울 빈칸\n\n## 처리 결과\n",
 }
 FOLDERS = ["00_Inbox", "10_Daily/Weekly", "20_Projects", "30_Areas", "40_Resources/해결 기록",
            "40_Resources/참고 자료", "50_Notes", "90_Archive", "99_System/Templates", "99_System/Routines"]
-TYPES = {"inbox", "daily", "weekly", "project", "area", "resource", "fix", "note", "system", "journal", "dream", "repo"}
+TYPES = {"inbox", "daily", "weekly", "project", "area", "resource", "fix", "note", "system", "journal", "dream", "repo",
+         "check"}
 INDEX_NOTE = ("99_System", "색인.md")
 LOG_NOTE = ("99_System", "브레인 로그.md")
 LOG_KINDS = ("ingest", "query", "lint")
@@ -726,6 +734,8 @@ def cmd_lint(a):
     for p, text in contents.items():
         if p.is_relative_to(vault) and p.relative_to(vault).parts[:1] == ("99_System",):
             continue  # 색인·브레인 로그·템플릿의 링크는 연결로 치지 않는다
+        if (frontmatter(text or "") or {}).get("type") in {"check", "dream"}:
+            continue  # 점검 결과·dream 제안이 건 링크도 연결로 치지 않는다(고아 노트가 가려지지 않게)
         for t in links_of(text or ""):
             inbound.setdefault(Path(normalized_link(t)).name, set()).add(p.stem)
     issues, checked = [], 0
@@ -775,7 +785,7 @@ def cmd_lint(a):
             is_date = re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized_link(target))
             if not resolves(target, names, paths) and not (is_date and t in {"daily", "weekly", "journal"}):
                 issues.append((rel, f"깨진 링크 [[{target}]]"))
-        if t not in {"inbox", "daily", "weekly", "system", "journal", "dream", ""} and not out \
+        if t not in {"inbox", "daily", "weekly", "system", "journal", "dream", "check", ""} and not out \
                 and normalized_link(p.name) not in inbound:
             issues.append((rel, "고아 노트(들어오고 나가는 링크 없음)"))
         for conflict in re.findall(r"^[ \t]*(?:>[ \t]*)+충돌:[ \t]*(.*)$", strip_code(text), re.M):
@@ -796,6 +806,12 @@ def plain(line):
     line = re.sub(r"^\s*(?:[-*>]\s*)+(?:\[[ xX]\]\s*)?", "", line)
     line = re.sub(r"[`*]+", "", line)  # 밑줄은 남긴다(함수·테이블 같은 식별자에 들어 있다)
     return re.sub(r"\s+", " ", line).strip()
+
+
+def pending_decisions(text):
+    """점검 결과 노트의 `## 결정 대기` 절에 남은 `- [ ]` 항목 수(다른 절의 체크박스는 세지 않는다)."""
+    section = re.search(r"^## 결정 대기[^\n]*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+    return len(re.findall(r"^- \[ \]", section[1], re.M)) if section else 0
 
 
 def summary_of(text, kind):
@@ -845,7 +861,10 @@ def cmd_index(a):
         kind = fm.get("type", "")
         meta = [x for x in [fm.get("status") if kind == "project" else ""] if x]
         meta += [f"`#{t}`" for t in tags_of(fm)]  # 코드 안의 #은 Obsidian 태그로 잡히지 않는다
-        summary = summary_of(text, kind)[:90] if kind not in {"area", "note", "system", "dream"} else ""
+        if kind == "check":
+            summary = f"결정 대기 {pending_decisions(text)}건"
+        else:
+            summary = summary_of(text, kind)[:90] if kind not in {"area", "note", "system", "dream"} else ""
         line = f"- {p.stem}" + (f" ({' '.join(meta)})" if meta else "") + (f" — {summary}" if summary else "")
         folder = rel.parent.as_posix() if top else "(볼트 루트)"
         groups.setdefault(folder, []).append(line)

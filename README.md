@@ -133,8 +133,8 @@ AI 에이전트(스킬을 설치한 Claude Code나 Codex)에게 이렇게 말한
 | "전에 이거 해결한 적 있나" | 해결 기록부터 찾아 답한다 | (읽기만) |
 | "기억해: ○○", "브레인에 넣어" | 지식·사실·결정이면 같은 주제 노트를 찾아 고치거나 맞는 폴더에 새로 쓴다. AI의 작업 방식에 대한 교정이면 볼트가 아니라 에이전트 메모리에 둔다 | 해당 노트, `99_System/브레인 로그.md` |
 | (분석·비교·웹 조사 답 끝의) "브레인에 남길까요?"에 "응" | 같은 주제 노트를 찾아 고치거나 새로 쓰고 출처를 단다 | 해당 노트, `99_System/브레인 로그.md` |
-| "세컨드 브레인 점검" | 색인을 다시 만들고 `sb lint`로 깨진 링크·고아·비밀정보·남은 `> 충돌:`을 찾아 형식 문제는 고친다. 낡은 내용·방치 프로젝트는 목록으로만 보고한다 | `99_System/색인.md`, `99_System/브레인 로그.md` |
-| `/inbox`, `/inbox 같이` (Claude Code) | 인박스를 나와 함께 정리하고, dream 규칙 제안은 번호별로 승인받아 반영한다 | 각 폴더, 전역 `CLAUDE.md` 또는 프로젝트 메모리 |
+| "세컨드 브레인 점검" | 색인을 다시 만들고 `sb lint`로 깨진 링크·고아·비밀정보·남은 `> 충돌:`을 찾아 형식 문제는 고친다. 낡은 내용·방치 프로젝트처럼 내가 정할 것은 고치지 않고 `00_Inbox/YYYY-MM-DD 점검 결과.md` 체크리스트로 남긴다 | `99_System/색인.md`, `99_System/브레인 로그.md`, `00_Inbox/` |
+| `/inbox`, `/inbox 같이` (Claude Code) | 인박스를 나와 함께 정리하고, dream 규칙 제안은 번호별로 승인받아 반영하고, 점검 결과는 항목 ID별로 결정받아 볼트에 반영한다 | 각 폴더, 전역 `CLAUDE.md` 또는 프로젝트 메모리 |
 | `/init-project [경로]` (Claude Code) | 코드 저장소를 읽기만 하고 저장소 노트를 만들거나 갱신한다 | `40_Resources/저장소/` |
 
 AI는 매번 볼트의 `AGENTS.md`를 먼저 읽고 그 규칙을 따른다. 규칙이 서로 다르면 **사용자의 그때그때 지시 > `AGENTS.md` > `local.md` > 나의 판단 방식 노트 > 스킬 기본값** 순으로 따른다. 기록할 대상이 애매하면 쓰기 전에 먼저 묻고, 쓴 뒤에는 바꾼 파일을 점검한 실제 결과로 보고한다. 읽기만 했으면 `볼트 변경: 없음(읽기 전용)`이라고 적는다. 자세한 동작은 [docs/AI와-함께-쓰기.md](docs/AI와-함께-쓰기.md#요청별로-ai가-실제로-하는-일)에 있다.
@@ -166,7 +166,7 @@ Claude Code에 설치하면 hook 세 개가 볼트에 기록을 쌓는다. 저�
 |---|---|---|
 | 세션이 끝날 때 | 그 세션에서 한 일을 한 줄로 요약 | `10_Daily/Journal/YYYY-MM-DD 세션.md` |
 | 하루 한 번(세션 시작 때) | 대화에서 내가 AI를 교정하거나 선호를 밝힌 대목을 골라 규칙 **제안** | `00_Inbox/YYYY-MM-DD dream 규칙 제안.md` → `/inbox`에서 승인한 것만 전역 `CLAUDE.md`의 `# 배운 규칙 (dream)` 또는 프로젝트 메모리로 |
-| 세션 시작 때 | 볼트 색인을 다시 만들고, dream 제안 대기·점검 7일 경과·로그인 풀림을 하루 한 번 알림 | `99_System/색인.md`, 세션 맥락의 `[brain]` 줄 |
+| 세션 시작 때 | 볼트 색인을 다시 만들고, dream 제안 대기·점검 결과 결정 대기·점검 7일 경과·로그인 풀림을 하루 한 번 알림 | `99_System/색인.md`, 세션 맥락의 `[brain]` 줄 |
 
 - **터미널 CLI 로그인이 필요하다.** 요약은 `claude -p --model haiku`(도구 없음)로 하므로 터미널에서 `claude auth login`을 한 번 해 둔다. 데스크톱 앱 로그인과는 따로다. 로그인 전에는 대기열에 쌓였다가 로그인 뒤 처리된다.
 - **대화 일부가 요약 모델로 간다.** 사람이 친 말과 Claude의 글(도구 결과 제외)이 비밀정보 패턴을 가린 뒤 내 Claude 계정으로 보내지고, 사용량도 그 계정에서 쓴다. 일지·dream 파일은 볼트 노트라 볼트를 백업하면 함께 올라간다. 빼고 싶은 작업 폴더는 `~/.second-brain/config.json`의 `journal_exclude`에 적는다.
@@ -227,7 +227,7 @@ rm -rf ~/.claude/skills/second-brain   # 스킬까지 모두 지울 때
 | `skills/second-brain/scripts/sb.py` | 보조 도구: 볼트 만들기·연결, 날짜, 템플릿 채우기, 할 일·태그·링크 점검 |
 | `skills/second-brain/local.example.md` | 개인 설정 `local.md`의 예시. `~/.second-brain/local.md`로 복사해 쓴다 |
 | `skills/second-brain/assets/starter-vault/` | 스타터 볼트: `AGENTS.md`, `Home.md`, 템플릿, 루틴 프롬프트 |
-| `skills/inbox/`, `skills/init-project/` | Claude Code에서 직접 부르는 `/inbox`(인박스·dream 제안 승인), `/init-project`(저장소 노트) |
+| `skills/inbox/`, `skills/init-project/` | Claude Code에서 직접 부르는 `/inbox`(인박스·dream 제안 승인·점검 결과 결정), `/init-project`(저장소 노트) |
 | `hooks/` | Claude Code hook: 세션 일지(`brain-journal.py`), dream·색인(`brain-dream.py`), 안내 줄(`brain-lint-reminder.py`), 공용 코드(`brain_common.py`) |
 | `tools/claude_setup.py`, `tools/brain-claude-md.md` | hook·전용 스킬 복사와 `settings.json`·`CLAUDE.md` 고치기(설치 스크립트가 부른다), `CLAUDE.md`에 더하는 구역 |
 | `LICENSE` | MIT 라이선스 |

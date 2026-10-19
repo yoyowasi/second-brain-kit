@@ -400,6 +400,22 @@ check("F8b 근거 인용 따옴표·숫자로 시작하는 문장 보존", '"확
 out = subprocess.run([sys.executable, str(HOOKS / "brain-lint-reminder.py")], input=b"{}", capture_output=True,
                      env=dict(os.environ)).stdout.decode("utf-8")
 check("F9 알림: dream 제안 대기", "dream 규칙 제안이 2건" in out, out[:100])
+check("F9b 점검 결과가 없으면 결정 대기 알림 없음", "점검 결과 결정 대기" not in out and "/inbox 로 먼저" not in out)
+
+# F10. 점검 결과(type: check)의 '결정 대기' 미처리 항목 알림(다른 절의 체크박스는 세지 않음)
+(v / "00_Inbox" / "2026-10-19 점검 결과.md").write_text(
+    "---\ntype: check\ntags: []\ncreated: 2026-10-19T10:00\n---\n# 2026-10-19 점검 결과\n\n## 결정 대기\n\n### A. 상태\n"
+    "- [ ] [A1] [[x]] — 문제\n- [x] [A2] [[y]] — 문제 → 결정: 닫기 (2026-10-19)\n- [ ] [A3] [[z]] — 문제\n\n"
+    "## 웹으로 채울 빈칸\n- 조사 항목\n\n## 처리 결과\n- [ ] 이 줄은 세지 않는다\n", encoding="utf-8")
+bc.save_state("remind", {})
+out = subprocess.run([sys.executable, str(HOOKS / "brain-lint-reminder.py")], input=b"{}", capture_output=True,
+                     env=dict(os.environ)).stdout.decode("utf-8")
+check("F10 알림: 점검 결과 결정 대기 2건(결정 대기 절만 셈)", "점검 결과 결정 대기가 2건" in out, out[:160])
+# F11. 7일 점검 권유(이 볼트는 lint 기록이 없다)에 앞선 점검 결과를 먼저 처리하라는 안내가 붙는다
+check("F11 7일 점검 권유에 앞선 결과 먼저 처리 안내", "점검(lint)을 한 번도 하지 않았다" in out and "결정 대기 2건을 /inbox 로 먼저" in out)
+out = subprocess.run([sys.executable, str(HOOKS / "brain-lint-reminder.py")], input=b"{}", capture_output=True,
+                     env=dict(os.environ)).stdout.decode("utf-8")
+check("F11b 같은 날 두 번째 세션은 다시 알리지 않음", "점검 결과 결정 대기" not in out and "점검(lint)" not in out, out[:160])
 
 # G. 재귀 방지
 for name in ("brain-journal", "brain-dream", "brain-lint-reminder"):

@@ -1,7 +1,9 @@
 """SessionStart hook — stdout 은 세션 맥락에 들어간다. 필요할 때만 `[brain] ...` 안내 줄을 낸다(종류마다 하루 한 번).
 
 - 인박스에 dream 제안(type: dream)이 있으면 /inbox 를 권한다.
-- 99_System/브레인 로그.md 의 마지막 lint 가 7일을 넘었으면(한 번도 없었으면 포함) 점검을 권한다.
+- 인박스 점검 결과(type: check)의 `## 결정 대기`에 미처리 항목이 있으면 /inbox 를 권한다.
+- 99_System/브레인 로그.md 의 마지막 lint 가 7일을 넘었으면(한 번도 없었으면 포함) 점검을 권한다
+  (앞선 점검 결과가 남아 있으면 그것부터 처리하라고 덧붙인다).
 - 요약용 claude CLI 로그인이 풀려 일지·dream 이 멈춰 있거나, 대기열이 2일 넘게 막혀 있으면 알린다.
 무인 세션(CLAUDE_CODE_SESSION_ATTENDED=0 — 헤드리스, CLAUDE_CODE_HOST_SCHEDULED_RUN=1 — 데스크톱 예약 작업)에서는
 아무것도 내지 않고 '하루 한 번' 표시도 쓰지 않는다(아침 루틴이 사용자 몫의 알림을 먼저 써 버리지 않게).
@@ -32,6 +34,24 @@ def dream_files(v):
         if re.search(r"^type:\s*dream\s*$", head, re.M):
             found.append(p.stem)
     return found
+
+
+def check_pending(v):
+    """인박스 점검 결과(type: check)의 `## 결정 대기` 절에 남은 `- [ ]` 항목 수와 파일 이름."""
+    files, count = [], 0
+    for p in sorted((v / "00_Inbox").glob("*.md")):
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not re.search(r"^type:\s*check\s*$", text[:300], re.M):
+            continue
+        section = re.search(r"^## 결정 대기[^\n]*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+        n = len(re.findall(r"^- \[ \]", section[1], re.M)) if section else 0
+        if n:
+            files.append(p.stem)
+            count += n
+    return files, count
 
 
 def last_lint(v):
@@ -66,11 +86,18 @@ def main():
                      f'첫 답 끝에 "dream 규칙 제안이 {len(dreams)}건 있습니다. /inbox 로 볼까요?" 를 한 줄로 제안할 것.')
         shown["dream"] = today.isoformat()
 
+    check_files, check_count = check_pending(v)
+    if check_count and shown.get("check") != today.isoformat():
+        lines.append(f'[brain] 인박스 점검 결과({", ".join(check_files[:2])})에 결정 대기 {check_count}건이 남아 있다. '
+                     f'첫 답 끝에 "점검 결과 결정 대기가 {check_count}건 있습니다. /inbox 로 볼까요?" 를 한 줄로 제안할 것.')
+        shown["check"] = today.isoformat()
+
     last = last_lint(v)
     if (last is None or (today - last).days > 7) and shown.get("lint") != today.isoformat():
         since = "한 번도 하지 않았다" if last is None else f"마지막 점검 {last} ({(today - last).days}일 전)"
+        first = f" 앞선 점검 결과의 결정 대기 {check_count}건을 /inbox 로 먼저 처리하라고 함께 권할 것." if check_count else ""
         lines.append(f'[brain] 세컨드 브레인 점검(lint)을 {since}. '
-                     f'첫 답 끝에 "세컨드 브레인 점검을 할까요?" 를 한 줄로 제안할 것.')
+                     f'첫 답 끝에 "세컨드 브레인 점검을 할까요?" 를 한 줄로 제안할 것.{first}')
         shown["lint"] = today.isoformat()
 
     auth = bc.load_state("auth")

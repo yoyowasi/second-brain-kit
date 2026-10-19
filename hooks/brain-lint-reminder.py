@@ -1,7 +1,7 @@
 """SessionStart hook — stdout 은 세션 맥락에 들어간다. 필요할 때만 `[brain] ...` 안내 줄을 낸다(종류마다 하루 한 번).
 
 - 인박스에 dream 제안(type: dream)이 있으면 /inbox 를 권한다.
-- 인박스 점검 결과(type: check)의 `## 결정 대기`에 미처리 항목이 있으면 /inbox 를 권한다.
+- 인박스 점검 결과(type: check)의 `## 결정 대기`에 미처리 항목이 있으면 /inbox 를 권한다(`→ 보류` 항목은 세지 않는다).
 - 99_System/브레인 로그.md 의 마지막 lint 가 7일을 넘었으면(한 번도 없었으면 포함) 점검을 권한다
   (앞선 점검 결과가 남아 있으면 그것부터 처리하라고 덧붙인다).
 - 요약용 claude CLI 로그인이 풀려 일지·dream 이 멈춰 있거나, 대기열이 2일 넘게 막혀 있으면 알린다.
@@ -37,7 +37,7 @@ def dream_files(v):
 
 
 def check_pending(v):
-    """인박스 점검 결과(type: check)의 `## 결정 대기` 절에 남은 `- [ ]` 항목 수와 파일 이름."""
+    """인박스 점검 결과(type: check)의 `## 결정 대기` 절에 남은 `- [ ]` 항목 수와 파일 이름(`→ 보류` 항목은 세지 않음)."""
     files, count = [], 0
     for p in sorted((v / "00_Inbox").glob("*.md")):
         try:
@@ -47,7 +47,7 @@ def check_pending(v):
         if not re.search(r"^type:\s*check\s*$", text[:300], re.M):
             continue
         section = re.search(r"^## 결정 대기[^\n]*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
-        n = len(re.findall(r"^- \[ \]", section[1], re.M)) if section else 0
+        n = sum("→ 보류" not in s for s in re.findall(r"^- \[ \].*$", section[1], re.M)) if section else 0
         if n:
             files.append(p.stem)
             count += n

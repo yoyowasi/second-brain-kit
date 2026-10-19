@@ -991,6 +991,9 @@ class SecondBrainTests(unittest.TestCase):
         self.assertRegex(text, r"^---\ntype: check\ntags: \[\]\ncreated: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}\n---\n")
         self.assertIn("# 2026-10-19 점검 결과\n", text)
         self.assertIn("`/inbox`", text)
+        guide = next(line for line in text.splitlines() if line.startswith("> 🤖 세컨드 브레인 점검에서"))
+        self.assertIn("`추천대로: A2, A4`", guide)  # 추천 일괄 수락 안내도 같은 인용 한 줄에 있다
+        self.assertIn("무인 루틴은 이 파일을 처리하지 않는다.", guide)
         self.assertNotIn("<%", text)
         self.assertLess(text.index("## 결정 대기"), text.index("## 웹으로 채울 빈칸"))
         self.assertLess(text.index("## 웹으로 채울 빈칸"), text.index("## 처리 결과"))
@@ -1023,6 +1026,30 @@ class SecondBrainTests(unittest.TestCase):
         self.sb("index")
         text = (self.vault / "99_System/색인.md").read_text(encoding="utf-8")
         self.assertIn("- 2026-10-19 점검 결과 — 결정 대기 2건\n", text)
+
+    def test_index_pending_decisions_skip_deferred_items_like_session_reminder(self):
+        body = ("---\ntype: check\ntags: []\ncreated: 2026-10-19T10:00\n---\n# 2026-10-19 점검 결과\n\n"
+                "## 결정 대기\n\n### A. 상태\n"
+                "- [ ] [A1] [[x]] — 문제 · 추천: 닫기\n"
+                "- [ ] [A2] [[y]] — 문제 → 보류: 자료를 기다림 (2026-10-19)\n\n"
+                "### B. 분류\n"
+                "- [ ] [B1] [[z]] — 문제 · 추천: 업무로\n"
+                "- [x] [B2] [[w]] — 문제 → 결정: 닫기 (2026-10-19)\n"
+                "- [ ] [B3] [[v]] — 문제 → 보류: 다음 점검에서 (2026-10-19)\n\n"
+                "## 처리 결과\n- [ ] 이 줄은 세지 않는다\n")
+        (self.vault / "00_Inbox/2026-10-19 점검 결과.md").write_text(body, encoding="utf-8")
+        (self.vault / "00_Inbox/2026-10-20 점검 결과.md").write_bytes(
+            body.replace("2026-10-19 점검", "2026-10-20 점검").replace("\n", "\r\n").encode("utf-8"))
+        self.sb("index")
+        text = (self.vault / "99_System/색인.md").read_text(encoding="utf-8")
+        self.assertIn("- 2026-10-19 점검 결과 — 결정 대기 2건\n", text)  # ### 묶음을 지나도 절 안이고, → 보류는 뺀다
+        self.assertIn("- 2026-10-20 점검 결과 — 결정 대기 2건\n", text)  # CRLF 파일도 같다
+        probe = ("import runpy, sys\n"
+                 "count = runpy.run_path(sys.argv[1])['pending_decisions']\n"
+                 "print(count(sys.argv[2].replace('\\n', '\\r\\n')), count(sys.argv[2]))\n")
+        result = subprocess.run([sys.executable, "-c", probe, str(SCRIPT), body], capture_output=True,
+                                env=self.env, cwd=self.root)
+        self.assertEqual(result.stdout.decode("utf-8").split(), ["2", "2"], result.stderr.decode("utf-8", "replace"))
 
     def test_today_shows_journal_path(self):
         out = self.sb("today", "--date", "2026-10-16")

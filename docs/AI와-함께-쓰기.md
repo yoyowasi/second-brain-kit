@@ -33,12 +33,16 @@ AI는 볼트 일을 시작할 때마다 이 순서를 따른다.
 |---|---|---|---|
 | Claude Code | `powershell -ExecutionPolicy Bypass -File install.ps1` | `bash install.sh` | `~/.claude/skills/second-brain`과 [자동 기록](#자동-기록-claude-code-hook)(hook·`/inbox`·`/init-project`) |
 | Claude Code + Codex | `powershell -ExecutionPolicy Bypass -File install.ps1 -Codex` | `bash install.sh --codex` | 위 경로와 `~/.agents/skills/second-brain` |
+| Claude Code + Antigravity | `powershell -ExecutionPolicy Bypass -File install.ps1 -Antigravity` | `bash install.sh --antigravity` | 첫 줄 경로와 `~/.gemini/config/skills/second-brain` |
+| 셋 다 | `powershell -ExecutionPolicy Bypass -File install.ps1 -All` | `bash install.sh --all` | 위 세 경로 모두 |
 
 - Claude Code는 `~/.claude/skills/` 아래 스킬을 모든 프로젝트에서 쓴다.
 - Codex는 사용자 스킬을 `~/.agents/skills/`에서 읽는다(Codex 공식 문서 기준). 예전 버전의 Codex나 이 키트의 예전 설치 스크립트는 `~/.codex/skills`를 썼을 수 있다. 설치 뒤 Codex의 스킬 목록에 보이지 않으면 Codex 공식 문서에서 지금 버전의 사용자 스킬 위치를 확인한다.
+- Antigravity는 사용자 스킬을 `~/.gemini/config/skills/`에서 읽는다. 이 위치는 Windows에서 Antigravity에 들어 있는 `migrate-workflows` 스킬 문서(전역 스킬 위치 `~/.gemini/config/skills/<이름>/SKILL.md`)로 확인했다. 버전이 바뀌어 스킬 목록에 보이지 않으면 Antigravity 문서에서 지금 위치를 확인한다.
+- Codex·Antigravity에는 `second-brain` 스킬만 복사한다. hook·`/inbox`·`/init-project`·`settings.json`·`CLAUDE.md` 변경은 Claude Code에만 한다. 설치 스크립트의 자동 시험은 Windows에서만 돌려 확인했다(macOS·Linux 분기는 자동 시험하지 않음).
 - `-ExecutionPolicy Bypass`는 그 한 번의 실행에만 적용되고 PC의 실행 정책 설정은 바꾸지 않는다.
 - 다시 실행해도 된다. 설치된 스킬·hook 파일만 새로 복사하고 개인 설정 폴더 `~/.second-brain/`은 건드리지 않는다. `~/.claude/settings.json`·`~/.claude/CLAUDE.md`는 고칠 것이 있을 때만 백업을 남기고 고친다([설치가 바꾸는 파일](#설치가-바꾸는-파일과-확인)). 키트를 새 버전으로 바꿀 때는 저장소를 갱신(`git pull` 또는 새 ZIP)한 뒤 설치 스크립트를 다시 실행한다.
-- **볼트 경로와 개인 설정은 한 곳에 있다.** `config.json`(볼트 경로)과 `local.md`(개인 설정)는 설치 위치와 관계없이 `~/.second-brain/`에 두고 Claude Code와 Codex 설치가 함께 쓴다. 그래서 `init`이나 `setup`은 한 번만 하면 된다([개인 설정](#개인-설정-localmd와-configjson)).
+- **볼트 경로와 개인 설정은 한 곳에 있다.** `config.json`(볼트 경로)과 `local.md`(개인 설정)는 설치 위치와 관계없이 `~/.second-brain/`에 두고 Claude Code·Codex·Antigravity 설치가 함께 쓴다. 그래서 `init`이나 `setup`은 한 번만 하면 된다([개인 설정](#개인-설정-localmd와-configjson)).
 - **예전 버전에서 바꿀 때**: 예전 버전은 `config.json`·`local.md`를 설치된 스킬 폴더 안에 두었다. 지금 `sb.py`는 그 파일을 읽지 않으므로, 그 두 파일을 `~/.second-brain/`으로 옮기거나 `setup`을 다시 한 번 실행한다.
 
 ## 설치 확인
@@ -48,13 +52,15 @@ AI는 볼트 일을 시작할 때마다 이 순서를 따른다.
    ```powershell
    # Windows (PowerShell) — True가 나오면 된다
    Test-Path "$HOME\.claude\skills\second-brain\SKILL.md"
-   Test-Path "$HOME\.agents\skills\second-brain\SKILL.md"    # -Codex로 설치했을 때
+   Test-Path "$HOME\.agents\skills\second-brain\SKILL.md"    # -Codex·-All로 설치했을 때
+   Test-Path "$HOME\.gemini\config\skills\second-brain\SKILL.md"    # -Antigravity·-All로 설치했을 때
    ```
 
    ```bash
    # macOS / Linux
    ls ~/.claude/skills/second-brain/SKILL.md
-   ls ~/.agents/skills/second-brain/SKILL.md   # --codex로 설치했을 때
+   ls ~/.agents/skills/second-brain/SKILL.md   # --codex·--all로 설치했을 때
+   ls ~/.gemini/config/skills/second-brain/SKILL.md   # --antigravity·--all로 설치했을 때
    ```
 
 2. **보조 도구가 실행되는지**
@@ -80,7 +86,7 @@ AI는 볼트 일을 시작할 때마다 이 순서를 따른다.
 3. **에이전트가 스킬을 보는지**
    - Claude Code: 새 세션에서 `/skills`를 실행하면 목록에 `second-brain`이 보인다. `/second-brain`으로 직접 부를 수도 있다.
    - Codex: 버전에 따라 `/skills`로 목록을 보거나 `$`를 입력해 스킬을 고른다. 정확한 방법은 Codex 공식 문서를 따른다.
-   - 어느 쪽이든 "세컨드 브레인 볼트 위치 확인해줘"라고 말하면 AI가 `sb.py where`를 실행하고 결과를 알려 준다.
+   - 어느 에이전트든(Antigravity 포함) "세컨드 브레인 볼트 위치 확인해줘"라고 말하면 AI가 `sb.py where`를 실행하고 결과를 알려 준다.
 
 ## 볼트 연결
 
@@ -263,7 +269,8 @@ mkdir -p ~/.second-brain
     "업무 일지": "../업무 일지/%Y-%m-%d.md"
   },
   "utc_offset": 9,
-  "journal_exclude": ["D:/Private"]
+  "journal_exclude": ["D:/Private"],
+  "journal_sources": ["claude", "codex"]
 }
 ```
 
@@ -275,7 +282,8 @@ mkdir -p ~/.second-brain
 | `read_outside` | 내용 읽기를 허용한 볼트 밖 폴더(볼트 기준, 예: `"../업무 일지"`). `backlinks` 검색, 명시한 외부 파일의 `lint` 점검, 연결된 외부 공유 템플릿의 `render`에 쓰인다. Obsidian 루트의 파일 이름만 색인하는 작업에는 이 허용이 필요 없다. 별칭과 실제 경로 어느 쪽으로 지정해도 같은 읽기 경계를 적용한다([볼트 루트가 더 위에 있을 때](#obsidian-볼트-루트가-더-위에-있을-때)) |
 | `today_sources` | `sb.py today`가 같이 보여 줄 외부 원본 파일. `"이름": "경로 패턴"` |
 | `utc_offset` | UTC 기준 시차(시간). 기본 9(한국 시간). 오늘 날짜와 `created` 시각, hook이 쓰는 세션 일지의 날짜·시각에 쓴다 |
-| `journal_exclude` | 세션 일지·dream에서 뺄 작업 폴더(경로 조각 목록). 그 폴더에서 연 Claude Code 세션은 요약하지도, 모델로 보내지도 않는다([자동 기록](#자동-기록-claude-code-hook)) |
+| `journal_exclude` | 세션 일지·dream에서 뺄 작업 폴더(경로 조각 목록). 그 폴더에서 연 Claude Code·Codex 세션은 요약하지도, 모델로 보내지도 않는다([자동 기록](#자동-기록-claude-code-hook)) |
+| `journal_sources` | 세션 일지에 남길 도구. 기본 `["claude", "codex"]`라 적지 않아도 Codex 세션이 일지에 들어간다. Codex 세션을 빼려면 `["claude"]`로 적는다([Codex 세션](#codex-세션)). dream 제안은 이 값과 관계없이 Claude Code 대화만 본다 |
 
 알아 둘 점:
 
@@ -391,13 +399,13 @@ cron은 터미널과 PATH가 달라 `claude`를 못 찾을 수 있으니 실행 
 
 ## 자동 기록 (Claude Code hook)
 
-설치 스크립트는 Claude Code에 hook 세 개와 직접 부르는 스킬 두 개(`/inbox`, `/init-project`)를 함께 설치한다. Codex에는 이 기능이 없고, Codex에서는 볼트 `AGENTS.md` 규칙만 쓴다.
+설치 스크립트는 Claude Code에 hook 세 개와 직접 부르는 스킬 두 개(`/inbox`, `/init-project`)를 함께 설치한다. Codex·Antigravity에는 hook이 없고 볼트 `AGENTS.md` 규칙만 쓴다. 다만 Codex 세션은 Claude Code hook이 읽어 같은 세션 일지에 넣는다(기본으로 켜져 있다, [Codex 세션](#codex-세션)).
 
 | hook (이벤트) | 하는 일 | 쓰는 곳 |
 |---|---|---|
-| `brain-journal.py` (SessionEnd) | 끝난 세션에서 한 일을 한 줄로 요약한다. 이어서 연 세션은 늘어난 부분만 본다 | `10_Daily/Journal/YYYY-MM-DD 세션.md`에 `- HH:MM [프로젝트] 요약` |
-| `brain-dream.py` (SessionStart) | 1시간마다: SessionEnd가 오지 않은 채 30분 넘게 조용한 세션을 따라잡아 일지에 붙인다. 하루 한 번: 지난 실행 뒤 대화에서 사용자의 교정·선호를 골라 규칙 **제안**을 만든다. 7일마다: dream으로 들어간 규칙이 5개 이상이면 합치기·고치기·빼기 제안을 만든다. 매번: 색인을 다시 만든다(바뀐 게 있을 때만 쓴다) | `00_Inbox/YYYY-MM-DD dream 규칙 제안.md`(`type: dream`), `99_System/색인.md` |
-| `brain-lint-reminder.py` (SessionStart) | 필요할 때만 세션 맥락에 `[brain] ...` 안내 줄을 넣는다(종류마다 하루 한 번): dream 제안 대기, 점검 결과(`type: check`)의 `## 결정 대기`에 남은 항목, 마지막 점검이 7일 넘음(남은 점검 결과가 있으면 그것부터 처리하라고 덧붙임), CLI 로그인 풀림, 일지 대기열이 2일 넘게 막힘. 무인 세션(헤드리스·예약 작업)에서는 아무것도 하지 않는다 | (볼트에 쓰지 않음) |
+| `brain-journal.py` (SessionEnd) | 끝난 세션에서 한 일을 한 줄로 요약한다. 이어서 연 세션은 늘어난 부분만 본다 | `10_Daily/Journal/YYYY-MM-DD 세션.md`에 `- HH:MM [프로젝트] 요약`(`[프로젝트]`는 작업 폴더 이름. Codex 세션은 `[codex·폴더]`) |
+| `brain-dream.py` (SessionStart) | 1시간마다: SessionEnd가 오지 않은 채 30분 넘게 조용한 세션과 Codex 세션을 따라잡아 일지에 붙인다. 하루 한 번: 지난 실행 뒤(최대 7일) 대화에서 사용자의 교정·선호를 골라 규칙 **제안**을 만든다. 7일마다: dream으로 들어간 규칙이 5개 이상이면 합치기·고치기·빼기 제안을 만든다. 매번: 색인을 다시 만든다(바뀐 게 있을 때만 쓴다) | `10_Daily/Journal/`(따라잡은 일지), `00_Inbox/YYYY-MM-DD dream 규칙 제안.md`(`type: dream`), `99_System/색인.md` |
+| `brain-lint-reminder.py` (SessionStart) | 필요할 때만 세션 맥락에 `[brain] ...` 안내 줄을 넣는다(종류마다 하루 한 번): dream 제안 대기, 점검 결과(`type: check`)의 `## 결정 대기`에 남은 항목(`→ 보류` 제외), 마지막 점검이 7일 넘음(남은 점검 결과가 있으면 그것부터 처리하라고 덧붙임), CLI 로그인 풀림, 일지 대기열이 2일 넘게 막힘. 무인 세션(헤드리스·예약 작업)에서는 아무것도 하지 않는다 | (볼트에 쓰지 않음) |
 
 hook은 세션 시작·종료를 막지 않도록 곧바로 끝나고, 요약은 떼어 낸 백그라운드 프로세스가 한다. 여러 세션이 동시에 끝나도 파일 잠금으로 겹치지 않는다.
 
@@ -407,13 +415,25 @@ hook은 세션 시작·종료를 막지 않도록 곧바로 끝나고, 요약은
 claude auth login
 ```
 
-로그인 전이거나 사용량 한도·네트워크 오류가 나면 항목을 대기열(`~/.second-brain/state/queue/`)에 남겨 두었다가 다음 세션 시작 때 다시 처리한다. 7일 넘게 처리하지 못한 항목은 대기열에서 뺀다(원본 대화 기록은 `~/.claude/projects/`에 그대로 있다). 로그인이 풀려 있으면 `[brain]` 줄이 알려 준다.
+로그인 전이거나 사용량 한도·네트워크 오류가 나면 항목을 대기열(`~/.second-brain/state/queue/`)에 남겨 두었다가 다음 세션 시작 때 다시 처리한다. 7일 넘게 처리하지 못한 항목은 대기열에서 뺀다(원본 대화 기록은 `~/.claude/projects/`, Codex는 `~/.codex`에 그대로 있다). 로그인이 풀려 있으면 `[brain]` 줄이 알려 준다.
 
-**모델로 보내는 것**: 일지는 그 세션에서 사람이 친 말과 Claude의 글만(도구 호출·결과, `system-reminder`, 하위 에이전트 알림 제외) 마지막 20KB까지 보낸다. dream은 지난 실행 뒤 사용자 말마다 바로 앞 Claude 답 끝 300자를 붙인 발췌(최근 것부터 120KB), 전역 `CLAUDE.md`, `30_Areas/나의 판단 방식.md`, 관련 프로젝트의 Claude 메모리 목록을 보낸다. 보내기 전에 비밀번호·토큰·접속 문자열·카드번호·주민등록번호·전화번호로 보이는 문자열을 `[비밀정보 제거됨]`으로 바꾼다. 로그인한 Claude 계정의 사용량(세션마다 haiku 한 번, 하루에 dream 한 번)을 쓴다.
+**모델로 보내는 것**: 일지는 그 세션에서 사람이 친 말과 Claude의 글만(도구 호출·결과, `system-reminder`, 하위 에이전트 알림 제외) 마지막 20KB까지 보낸다. dream은 지난 실행 뒤(최대 7일) 사용자 말마다 바로 앞 Claude 답 끝 300자를 붙인 발췌를 보낸다. 발췌는 오래된 것부터 120KB 묶음으로 나눠, 한 번 실행에 3묶음까지 묶음마다 haiku를 한 번 부른다. 제안이 5개 차면 멈추고, 남은 발췌는 다음 실행이 이어서 본다. 호출마다 전역 `CLAUDE.md`, `30_Areas/나의 판단 방식.md`, 관련 프로젝트의 Claude 메모리 목록, 최근 30일 dream 제안의 규칙과 사용자 정정 줄도 함께 간다. 보내기 전에 비밀번호·토큰·접속 문자열·카드번호·주민등록번호·전화번호로 보이는 문자열을 `[비밀정보 제거됨]`으로 바꾼다. 7일마다 하는 정리 제안은 dream으로 들어간 규칙 줄만 보낸다. 로그인한 Claude 계정의 사용량(세션마다 haiku 한 번, dream은 하루 한 번 실행에 최대 3번, 정리 제안은 7일마다 한 번)을 쓴다. 일시 오류로 멈춘 dream은 1시간 뒤 세션 시작 때 이어서 돈다. Codex 세션도 같은 방식으로 사용자 말과 Codex 답만 보낸다([Codex 세션](#codex-세션)).
 
-**빠지는 세션**: 에이전트 scratchpad·임시 폴더 세션, 예약 작업으로 실행된 세션, 새 대화가 1KB 미만인 세션, `config.json`의 `journal_exclude`에 적은 폴더의 세션. 세션 일지와 dream 제안은 볼트 노트라 볼트를 git 등으로 백업하면 함께 올라간다. 올리고 싶지 않은 작업 폴더(예: 개인 문서 폴더)는 `journal_exclude`에 넣는다.
+**빠지는 세션**: 에이전트 scratchpad·임시 폴더 세션, 예약 작업으로 실행된 세션, 새 대화가 1KB 미만인 세션, `config.json`의 `journal_exclude`에 적은 폴더의 세션. Codex는 여기에 더해 `codex exec`·하위 에이전트 세션을 모으지 않는다. 따라잡기는 Claude Code·Codex 모두 마지막 말이 7일보다 오래된 세션을 소급해 남기지 않는다(기록 파일은 대화 없이 열어 보기만 해도 수정 시각이 바뀌기 때문). Codex 세션은 끝날 때 알려 주는 hook이 없어서, Claude Code 세션을 시작할 때 따라잡는다(1시간에 한 번까지, 30분 넘게 조용한 세션만). 세션 일지와 dream 제안은 볼트 노트라 볼트를 git 등으로 백업하면 함께 올라간다. 올리고 싶지 않은 작업 폴더(예: 개인 문서 폴더)는 `journal_exclude`에 넣는다.
 
 **승인한 것만 규칙이 된다**: dream 제안은 `/inbox`에서 번호별로 승인한 것만 전역 `~/.claude/CLAUDE.md`의 `# 배운 규칙 (dream)`(`<!-- brain:start -->` 구역 안, 최대 30줄, 줄마다 `[Lnn]`) 또는 그 프로젝트의 Claude 메모리(`~/.claude/projects/<폴더>/memory/`)에 들어간다. 무인 루틴과 다른 에이전트는 dream 파일을 건드리지 않는다(`AGENTS.md` "인박스 정리" 4번).
+
+### Codex 세션
+
+Codex를 쓰면 Codex 세션도 기본으로 세션 일지에 들어간다(`config.json`의 `journal_sources` 기본값이 `["claude", "codex"]`). Claude Code hook만 설치돼 있으면 되고, Codex 쪽에 따로 설치할 것은 없다.
+
+- **읽는 곳**: `CODEX_HOME`(기본 `~/.codex`)의 `state_5.sqlite`에서 스레드 목록(`threads`)을 읽기 전용으로 보고, 각 스레드의 대화 기록(rollout) 파일을 읽는다. Codex 파일은 고치지 않는다. VS Code·CLI에서 연 스레드(`source`가 `vscode`·`cli`)만 보고, `codex exec`와 하위 에이전트(`agent_role`이 있는 스레드)는 뺀다.
+- **보내는 것**: 사용자 말과 Codex 답만 쓴다. Codex가 대화에 끼워 넣는 맥락(`AGENTS.md` 지시, `environment_context` 등)은 뺀다. Claude Code 세션과 같은 비밀정보 가리기를 거쳐 마지막 20KB까지 내 Claude 계정의 haiku로 보낸다.
+- **언제**: Codex에는 세션이 끝날 때 부르는 hook이 없다. 다음 Claude Code 세션을 시작할 때 `brain-dream.py`가 따라잡는다(1시간에 한 번까지, 최근 7일 안에 바뀌고 마지막 말도 7일 안이며 30분 넘게 조용한 세션만).
+- **일지 줄**: `- HH:MM [codex·폴더] 요약`. `폴더`는 그 Codex 세션의 작업 폴더 이름이다. 일지 파일 머리말은 "세션 일지 hook 이 남기는 자동 일지다(Claude Code 는 세션이 끝날 때, Codex 는 다음 Claude Code 세션을 시작할 때 한 줄씩)"로 적힌다.
+- **dream은 보지 않는다**: 규칙 제안은 Claude Code 대화에서만 고른다.
+- **끄기**: `~/.second-brain/config.json`에 `"journal_sources": ["claude"]`를 적는다. 특정 폴더의 Codex 세션만 빼려면 `journal_exclude`에 적는다.
+- **확인**: Codex에서 대화하고 30분 넘게 지난 뒤 Claude Code 세션을 새로 연다. 1분쯤 뒤 그날 일지에 `[codex·폴더]` 줄이 생기면 된다. 생기지 않으면 `~/.claude/hooks/brain-dream.log`에서 `따라잡기`·`Codex`가 든 줄을 본다.
 
 ### /inbox와 /init-project
 
@@ -421,7 +441,7 @@ AI가 알아서 부르지 않고, 내가 직접 부르는 Claude Code 스킬이�
 
 | 명령 | 하는 일 |
 |---|---|
-| `/inbox` | 인박스를 나와 함께 정리한다. 일반 메모는 같은 주제 노트에 합치거나 맞는 폴더로 옮기고(`AGENTS.md` "인박스 정리"), dream 제안은 표로 보여 준 뒤 "전부 / 번호 / 없음"으로 승인받아 반영한다. 반영 결과는 dream 파일 끝에 적고, 보류가 없으면 파일을 `90_Archive/`로 옮긴다. 점검 결과는 `## 결정 대기` 항목을 묶음별로 보여 주고 항목 ID로 답한 것만 볼트에 반영해 `- [x] … → 결정: 내용 (날짜)`로 바꾼다. 남은 `- [ ]`가 없으면 `90_Archive/`로 옮긴다 |
+| `/inbox` | 인박스를 나와 함께 정리한다. 일반 메모는 같은 주제 노트에 합치거나 맞는 폴더로 옮기고(`AGENTS.md` "인박스 정리"), dream 제안은 표로 보여 준 뒤 "전부 / 번호 / 없음"으로 승인받아 반영한다. 반영 결과는 dream 파일 끝에 적고, 보류가 없으면 파일을 `90_Archive/`로 옮긴다. 점검 결과는 `## 결정 대기` 항목을 묶음별로 보여 주고 항목 ID로 답한 것만 볼트에 반영해 `- [x] … → 결정: 내용 (날짜)`로 바꾼다. 항목마다 적힌 추천을 그대로 받으려면 `추천대로: A2, A4, C1`처럼 ID를 나열한다(나열하지 않은 항목은 그대로 두고, ID 없는 "좋아"는 다시 묻는다). "보류"로 둔 항목은 `- [ ]`로 남지만 결정 대기 알림에서 빠지고 다음 점검이 이어받는다. 남은 `- [ ]`가 없으면 `90_Archive/`로 옮긴다 |
 | `/inbox 같이` | 자료마다 고치기 전에 핵심 2~3줄과 고칠 노트 목록을 보여 주고 무엇을 강조할지 묻는다 |
 | `/init-project [경로]` | 코드 저장소를 읽기만 하고 `40_Resources/저장소/<저장소 이름>.md`를 만들거나 갱신한다(개요·위치·스택·기능·구조와 흐름·현재 상태·주요 결정·다음 할 일). 별도 하위 에이전트(sonnet)로 돈다. `area`는 `local.md` "저장소 노트"의 회사 프로젝트 폴더 기준으로 정한다. `.env`·키 파일처럼 비밀이 든 파일은 열지 않는다 |
 
@@ -512,7 +532,8 @@ alias sb='python3 ~/.claude/skills/second-brain/scripts/sb.py'
 - 설치 전에 열어 둔 세션이라면 새 세션을 시작한다.
 - 요청에 "세컨드 브레인", "볼트", "해결 기록", "오늘 노트"처럼 스킬이 알아듣는 말을 넣는다.
 - 직접 부른다. Claude Code는 `/second-brain 오늘 노트 만들어줘`처럼 쓴다. Codex는 버전에 따라 `/skills`나 `$`로 스킬을 고른다.
-- Codex에서만 안 보이면 `~/.agents/skills/second-brain/SKILL.md`가 있는지 확인하고(`-Codex`·`--codex`로 설치했는지), Codex 공식 문서에서 지금 버전의 사용자 스킬 폴더를 확인한다([스킬 설치](#스킬-설치)).
+- Codex에서만 안 보이면 `~/.agents/skills/second-brain/SKILL.md`가 있는지 확인하고(`-Codex`·`--codex`·`-All`·`--all`로 설치했는지), Codex 공식 문서에서 지금 버전의 사용자 스킬 폴더를 확인한다([스킬 설치](#스킬-설치)).
+- Antigravity에서만 안 보이면 `~/.gemini/config/skills/second-brain/SKILL.md`가 있는지 확인한다(`-Antigravity`·`--antigravity`·`-All`·`--all`로 설치했는지).
 
 ### 볼트 경로·설정 오류
 

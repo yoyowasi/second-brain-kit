@@ -7,6 +7,9 @@ brain-journal.py(SessionEnd), brain-dream.py(SessionStart), brain-lint-reminder.
 - 상태·대기열·잠금: ~/.second-brain/state/ (볼트 밖, 동기화되지 않음). 실행 기록: ~/.claude/hooks/brain-<이름>.log
   (BRAIN_LOG_DIR 로 바꿀 수 있다 — 시험용).
 - config.json "journal_exclude": 일지·dream 에서 뺄 작업 폴더 경로 조각 목록(예: 개인 문서 폴더).
+- config.json "journal_sources": 일지에 남길 도구(기본 ["claude", "codex"]). Codex 세션은 SessionEnd 가 없어서
+  다음 Claude Code 세션을 시작할 때 brain-dream.py 따라잡기가 ~/.codex/state_5.sqlite(CODEX_HOME)를 읽기 전용으로
+  보고 일지에만 넣는다(dream 은 Claude Code 기록만 본다).
 - hook 은 볼트 git 을 커밋·push 하지 않는다(사용자나 Obsidian Git 같은 백업 도구 몫).
 """
 import datetime as dt
@@ -36,6 +39,8 @@ SB_SCRIPT = CLAUDE_DIR / "skills" / "second-brain" / "scripts" / "sb.py"
 SB_HOME = Path(os.environ.get("SECOND_BRAIN_HOME") or HOME / ".second-brain")
 STATE = SB_HOME / "state"
 QUEUE = STATE / "queue"
+CODEX_HOME = Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+CODEX_DB = "state_5.sqlite"
 
 # hook 과 떼어 낸 프로세스는 셸 설정을 읽지 않는다. claude CLI 가 있는 곳을 앞에 둔다.
 _EXTRA_PATH = [str(HOME / ".local" / "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
@@ -43,6 +48,7 @@ os.environ["PATH"] = os.pathsep.join(_EXTRA_PATH + [os.environ.get("PATH", "")])
 
 CREATE_NO_WINDOW = 0x08000000
 JOURNAL_MIN_BYTES = 1024
+CATCHUP_MAX_DAYS = 7  # 따라잡기는 마지막 말이 이 날수 안인 대화만 일지에 남긴다(brain-dream CATCHUP_DAYS 와 같게)
 JOURNAL_MAX_BYTES = 20 * 1024
 QUEUE_MAX_DAYS = 7
 
@@ -68,6 +74,12 @@ def vault():
         return None
     path = Path(raw).expanduser()
     return path if path.is_dir() else None
+
+
+def journal_source_on(name):
+    """config.json "journal_sources"(기본 ["claude", "codex"])에 든 도구의 세션만 일지에 남긴다."""
+    sources = CFG.get("journal_sources", ["claude", "codex"])
+    return name in (sources if isinstance(sources, list) else ["claude", "codex"])
 
 
 # ---------------------------------------------------------------- 기록·상태·잠금
@@ -197,24 +209,37 @@ ROUTINE = re.compile(r"^\s*<scheduled-task\b|This is an automated run of a sched
 def is_human(obj):
     """user 줄 중 사람이 친 말만. 하위 에이전트 결과 알림(task-notification)·다른 세션 메시지(peer)·예약 실행은 아님."""
     origin = obj.get("origin")
-    return not origin or origin.get("kind") in (None, "human")
+    return not origin or (isinstance(origin, dict) and origin.get("kind") in (None, "human"))
+
+
+def _content(obj):
+    """줄의 message.content. 모양이 다르면(깨진 줄) None."""
+    message = obj.get("message")
+    return message.get("content") if isinstance(message, dict) else None
+
+
+def _texts(blocks, kind):
+    """content 블록 중 type 이 kind 이고 text 가 글자열인 것만(깨진 줄의 dict·list text 는 뺀다)."""
+    return [b["text"] for b in blocks if isinstance(b, dict) and b.get("type") == kind and isinstance(b.get("text"), str)]
 
 
 def message_of(obj):
-    """(role, text) — 사람이 친 말과 Claude 의 글만. 도구 호출·도구 결과·메타·자동 알림은 None."""
+    """(role, text) — 사람이 친 말과 Claude 의 글만. 도구 호출·도구 결과·메타·자동 알림·깨진 줄은 None."""
+    if not isinstance(obj, dict):
+        return None
     kind = obj.get("type")
     if kind not in ("user", "assistant") or obj.get("isMeta") or obj.get("isSidechain") \
             or obj.get("isCompactSummary") or obj.get("isVisibleInTranscriptOnly"):
         return None
     if kind == "user" and not is_human(obj):
         return None
-    content = (obj.get("message") or {}).get("content")
+    content = _content(obj)
     if isinstance(content, str):
         text = content if kind == "user" else ""
     elif isinstance(content, list):
         if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
             return None
-        text = "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+        text = "\n".join(_texts(content, "text"))
     else:
         return None
     text = _TAGS.sub("", text).strip()
@@ -242,10 +267,12 @@ def read_transcript(path, start=0):
             head = line[:2000]  # cwd 는 줄 앞쪽에 있다(긴 도구 결과 전체를 훑지 않게)
             if '"cwd"' in head:
                 m = re.search(r'"cwd":\s*"((?:[^"\\]|\\.)*)"', head)
-                if m:
-                    c = json.loads(f'"{m[1]}"')
-                    if c not in seen:
-                        seen.append(c)
+                try:
+                    c = json.loads(f'"{m[1]}"') if m else None
+                except ValueError:  # 깨진 줄의 잘못된 escape
+                    c = None
+                if c and c not in seen:
+                    seen.append(c)
             if total <= start or ('"type":"user"' not in line and '"type":"assistant"' not in line
                                   and '"type": "user"' not in line and '"type": "assistant"' not in line):
                 continue
@@ -275,24 +302,25 @@ def _is_routine_start(path, limit=400):
                 obj = json.loads(line)
             except ValueError:
                 continue
-            if obj.get("type") != "user" or obj.get("isMeta"):
+            if not isinstance(obj, dict) or obj.get("type") != "user" or obj.get("isMeta"):
                 continue
-            if (obj.get("origin") or {}).get("subkind") == "scheduled-trigger":
+            origin = obj.get("origin")
+            if isinstance(origin, dict) and origin.get("subkind") == "scheduled-trigger":
                 return True
-            content = (obj.get("message") or {}).get("content")
+            content = _content(obj)
             if isinstance(content, list):
                 if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
                     continue
-                content = "\n".join(b.get("text", "") for b in content if isinstance(b, dict))
+                content = "\n".join(b["text"] for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
             if isinstance(content, str) and content.strip():
                 return bool(ROUTINE.search(content.lstrip("\ufeff")))
     return False
 
 
-def skip_reason(path, cwd):
-    """일지·dream 에서 뺄 세션: scratch·임시 폴더 세션, 예약 작업 세션, config 의 journal_exclude 폴더.
-    경로는 프로젝트 폴더 이름(cwd 를 옮긴 slug)과 cwd 만 본다."""
-    if SKIP_PATH.search(f"{Path(path).parent.name} {cwd or ''}"):
+def cwd_skip_reason(cwd, stored=""):
+    """작업 폴더로 뺄 세션: scratch·임시 폴더 세션, config 의 journal_exclude 폴더.
+    stored 는 기록이 저장된 프로젝트 폴더 이름(cwd 를 옮긴 slug)이다(Claude Code 기록만)."""
+    if SKIP_PATH.search(f"{stored} {cwd or ''}"):
         return "scratch 세션"
     norm = os.path.normcase(os.path.abspath(cwd)) if cwd else ""
     if norm and norm.startswith(os.path.normcase(os.path.abspath(tempfile.gettempdir()))):
@@ -300,9 +328,141 @@ def skip_reason(path, cwd):
     for part in CFG.get("journal_exclude", []):
         if part and norm and os.path.normcase(part) in norm:
             return "제외 폴더 세션"
+    return None
+
+
+def skip_reason(path, cwd):
+    """일지·dream 에서 뺄 세션: scratch·임시 폴더 세션, 예약 작업 세션, config 의 journal_exclude 폴더.
+    경로는 프로젝트 폴더 이름(cwd 를 옮긴 slug)과 cwd 만 본다."""
+    reason = cwd_skip_reason(cwd, Path(path).parent.name)
+    if reason:
+        return reason
     if _is_routine_start(path):
         return "예약 작업 세션"
     return None
+
+
+# ---------------------------------------------------------------- Codex 세션 읽기(일지 전용)
+
+# Codex 가 user 메시지로 끼워 넣는 맥락 블록 <태그>…</태그> 의 태그 이름. 실제 rollout 이나 Codex 프로그램에서 본 것만 둔다.
+# 여기 없는 <태그>(사용자가 친 <template>·<b> 같은 HTML)는 사람이 친 말로 남긴다.
+CODEX_CONTEXT_TAGS = (
+    "environment_context", "user_instructions", "permissions",  # 작업 환경·지침·권한
+    "in-app-browser-context", "external_codex_apps_open_page",    # 앱·브라우저 맥락
+    "codex_internal_context", "skill", "heartbeat", "turn_aborted", "guardian_tool_descriptions",
+    "user_shell_command", "subagent_notification", "user_action",  # ! 셸 명령 출력·하위 에이전트 결과·/review 결과
+)
+_CODEX_TAGS = "|".join(map(re.escape, CODEX_CONTEXT_TAGS))
+_CODEX_BLOCK = re.compile(rf"\s*<({_CODEX_TAGS})(?:\s[^>]*)?>.*?</\1(?:\s[^>]*)?>\s*", re.S)
+# 목록에 없어도 글 하나가 통째로 <이름_이름>…</이름_이름> 한 블록이면 Codex 가 새로 넣은 맥락으로 본다.
+# 사용자 HTML(<div>·<template>)은 이름에 '_' 가 없어 여기 걸리지 않는다.
+_CODEX_WHOLE = re.compile(r"\A\s*<([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?:\s[^>]*)?>.*</\1>\s*\Z", re.S)
+_CODEX_AGENTS = re.compile(r"\A\s*# AGENTS\.md instructions[^\n]*\n\s*<INSTRUCTIONS>.*?</INSTRUCTIONS>\s*", re.S)
+_CODEX_IMAGE = re.compile(r"<image name=\[[^\]\n]*#\d+\][^>]*>|\A\s*</image>\s*\Z")  # 이미지 자리 표시
+_CODEX_OPEN = re.compile(rf"# AGENTS\.md instructions|<(?:{_CODEX_TAGS})(?=[\s>])")  # 닫히지 않은(잘린) 맥락 블록
+_CODEX_REQUEST = re.compile(r"^## My request(?: for Codex)?:[ \t]*$", re.M)  # IDE 맥락 뒤에 붙는 실제 요청
+
+
+def _plain_path(text):
+    r"""Windows 긴 경로 표기(\\?\C:\…, \\?\UNC\…)를 보통 경로로. 제외 폴더·라벨 판정이 같은 모양을 보게."""
+    if not text:
+        return text
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[8:]
+    return text[4:] if text.startswith("\\\\?\\") else text
+
+
+def codex_user_text(text):
+    """Codex user 메시지에서 사람이 친 말만. 끼워 넣은 맥락(CODEX_CONTEXT_TAGS 블록, AGENTS.md 지침,
+    이미지 표시 태그)만 빼고 나머지는 그대로 둔다. IDE 맥락이 붙은 메시지는 '## My request:' 뒤만."""
+    if _CODEX_WHOLE.match(text):
+        return ""
+    text = _CODEX_AGENTS.sub("", text)
+    text = _CODEX_BLOCK.sub("\n", text)  # 블록을 먼저 빼서 셸 출력 안의 '## My request:' 줄에 속지 않게
+    text = _CODEX_REQUEST.split(text)[-1]
+    text = _CODEX_IMAGE.sub("", text).strip()
+    if _CODEX_OPEN.match(text):  # 끝 태그 없이 잘린 맥락 블록은 통째로 맥락이다
+        return ""
+    return text
+
+
+def read_codex_rollout(path, start=0):
+    """Codex rollout(sessions/…/rollout-*.jsonl)에서 read_transcript 와 같은 (메시지, 전체 줄 수, cwd) 를 돌려준다.
+    response_item 의 user·assistant message 만 본다: developer·system 지침, 하위 에이전트 사이 메시지(agent_message),
+    turn_context·event_msg 의 중복 기록, 도구 호출·추론은 뺀다. cwd 는 session_meta(없으면 turn_context)."""
+    messages, total, cwd, fallback = [], 0, None, None
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for total, line in enumerate(f, 1):
+            head = line[:300]
+            meta = '"session_meta"' in head or '"turn_context"' in head
+            if not meta and (total <= start or '"role"' not in line):
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(obj, dict):  # 깨진 줄(목록·글자열·숫자)
+                continue
+            payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+            if obj.get("type") in ("session_meta", "turn_context"):
+                c = payload.get("cwd")
+                if isinstance(c, str) and c:
+                    if obj["type"] == "session_meta":
+                        cwd = cwd or c
+                    else:
+                        fallback = fallback or c
+                continue
+            role = payload.get("role")
+            if total <= start or obj.get("type") != "response_item" or payload.get("type") != "message" \
+                    or role not in ("user", "assistant") or not isinstance(payload.get("content"), list):
+                continue
+            texts = _texts(payload["content"], "input_text" if role == "user" else "output_text")
+            if role == "user":
+                texts = [codex_user_text(t) for t in texts]
+            text = "\n".join(t.strip() for t in texts if t and t.strip())
+            if text:
+                messages.append({"line": total, "role": role, "text": text, "ts": _timestamp(obj)})
+    return messages, total, _plain_path(cwd or fallback)
+
+
+def codex_threads(since_epoch=0, logname="dream"):
+    """Codex 상태 DB(CODEX_HOME/state_5.sqlite 의 threads, 읽기 전용)에서 since 뒤에 바뀐 사람 대화 스레드.
+    VS Code·CLI 에서 연 스레드만(source vscode·cli, agent_role 없음 — exec·하위 에이전트는 뺀다)이고,
+    scratch·임시·journal_exclude 폴더는 뺀다. DB·표가 없거나 모양이 다르면 기록만 남기고 빈 목록.
+    반환: [{"id", "path", "cwd", "updated"}]"""
+    if not CODEX_HOME.is_dir():
+        return []  # Codex 를 쓰지 않음
+    db = CODEX_HOME / CODEX_DB
+    if not db.is_file():
+        log(logname, f"Codex 상태 DB 없음({db.name}) — Codex 따라잡기 건너뜀")
+        return []
+    try:
+        import sqlite3
+        from urllib.parse import quote
+    except ImportError as e:
+        log(logname, f"sqlite3 를 쓸 수 없음({e}) — Codex 따라잡기 건너뜀")
+        return []
+    # \\?\ 긴 경로는 보통 경로로, UNC(//서버/공유)는 file:// 뒤에 붙여야 SQLite 가 서버 이름을 경로로 읽는다.
+    posix = Path(_plain_path(str(db))).as_posix()
+    uri = ("file://" if posix.startswith("//") else "file:") + quote(posix, safe="/:") + "?mode=ro"
+    try:
+        con = sqlite3.connect(uri, uri=True, timeout=5)
+        try:
+            rows = con.execute(
+                "SELECT id, rollout_path, cwd, updated_at FROM threads WHERE source IN ('vscode', 'cli') "
+                "AND (agent_role IS NULL OR agent_role = '') AND updated_at > ?", (int(since_epoch),)).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        log(logname, f"Codex 상태 DB 를 읽지 못함({type(e).__name__}: {e}) — Codex 따라잡기 건너뜀")
+        return []
+    out = []
+    for tid, rollout, cwd, updated in rows:
+        cwd = _plain_path(cwd)
+        if not tid or not rollout or cwd_skip_reason(cwd):
+            continue
+        out.append({"id": str(tid), "path": _plain_path(rollout), "cwd": cwd, "updated": updated or 0})
+    return out
 
 
 def project_label(cwd):
@@ -368,6 +528,9 @@ class TransientError(RuntimeError):
 # CLI 자체 오류는 답의 맨 앞에 나온다. 요약 본문에 '401' 이 들어 있어도 로그인 실패로 보지 않게 앞만 본다.
 _AUTH_HEAD = re.compile(r"(?i)\s*(?:failed to authenticate|oauth (?:session|token)|not logged in|invalid api key|"
                         r"please run /login|api error:?\s*401|authentication_error)")
+# 종료 코드 0 인 답은 CLI 만 쓰는 문구가 함께 있어야 로그인 실패로 본다.
+# 'OAuth token 갱신을 고쳤다' 같은 정상 요약이 대기열을 막지 않게.
+_AUTH_CLI = re.compile(r"(?i)please run /login|authentication_error")
 _AUTH_ANY = re.compile(r"(?i)failed to authenticate|oauth session expired|not logged in|please run /login|"
                        r"invalid api key|authentication_error|api error:?\s*401")
 
@@ -393,7 +556,8 @@ def ask_model(system, prompt, model="haiku", timeout=240):
     except OSError as e:
         raise TransientError(f"claude -p 실행 실패: {e}")
     out, err = (r.stdout or "").strip(), (r.stderr or "").strip()
-    if (len(out) < 400 and _AUTH_HEAD.match(out)) or (r.returncode != 0 and _AUTH_ANY.search(f"{out[:300]}\n{err[:500]}")):
+    if (len(out) < 400 and _AUTH_HEAD.match(out) and _AUTH_CLI.search(out)) \
+            or (r.returncode != 0 and _AUTH_ANY.search(f"{out[:300]}\n{err[:500]}")):
         raise AuthError((out or err)[:300])
     if r.returncode != 0 or not out:
         raise TransientError(f"claude -p 실패(exit {r.returncode}): {(err or out)[:300]}")
@@ -445,7 +609,8 @@ def append_journal(v, when, label, summary):
         text = path.read_text(encoding="utf-8", errors="replace")
     else:
         text = (f"---\ntype: journal\ntags: []\ncreated: {when:%Y-%m-%dT%H:%M}\n---\n# {day} 세션\n\n"
-                f"← [[{day}]] · Claude Code 세션이 끝날 때 hook 이 한 줄씩 남기는 자동 일지다. 손으로 고치지 않는다.\n")
+                f"← [[{day}]] · 세션 일지 hook 이 남기는 자동 일지다(Claude Code 는 세션이 끝날 때, "
+                f"Codex 는 다음 Claude Code 세션을 시작할 때 한 줄씩). 손으로 고치지 않는다.\n")
     rows = text.rstrip("\n").split("\n")
     if line in rows:
         return path
@@ -490,11 +655,11 @@ def pick_summary(answer):
     return ""
 
 
-def digest(messages):
+def digest(messages, assistant="Claude"):
     parts = []
     for m in messages:
         cap = 2000 if m["role"] == "user" else 1500
-        parts.append(f"{'사용자' if m['role'] == 'user' else 'Claude'}: {m['text'][:cap]}")
+        parts.append(f"{'사용자' if m['role'] == 'user' else assistant}: {m['text'][:cap]}")
     text = scrub("\n\n".join(parts))
     data = text.encode("utf-8")
     if len(data) > JOURNAL_MAX_BYTES:  # 마지막 20KB 만
@@ -502,13 +667,20 @@ def digest(messages):
     return text
 
 
-def enqueue(session_id, transcript_path, cwd=None, reason=None):
+def queue_file(session_id):
+    """대기열 파일. Codex 키(codex:<id>)의 ':' 처럼 파일 이름에 못 쓰는 글자는 '_' 로 바꾼다."""
+    return QUEUE / (re.sub(r'[\\/:*?"<>|]', "_", session_id) + ".json")
+
+
+def enqueue(session_id, transcript_path, cwd=None, reason=None, source=None):
+    """source: "claude"(기본) 또는 "codex" — 처리할 때 맞는 기록 읽기를 고른다."""
     if not session_id or not transcript_path:
         return False
     QUEUE.mkdir(parents=True, exist_ok=True)
     item = {"session_id": session_id, "transcript_path": str(transcript_path), "cwd": cwd,
-            "reason": reason, "queued_at": now().isoformat(timespec="microseconds"), "tries": 0}
-    old = QUEUE / f"{session_id}.json"
+            "reason": reason, "source": source or "claude",
+            "queued_at": now().isoformat(timespec="microseconds"), "tries": 0}
+    old = queue_file(session_id)
     if old.exists():
         try:
             prev = json.loads(old.read_text(encoding="utf-8"))
@@ -517,7 +689,7 @@ def enqueue(session_id, transcript_path, cwd=None, reason=None):
             item["cwd"] = cwd or prev.get("cwd")
         except (OSError, ValueError):
             pass
-    tmp = QUEUE / f"{session_id}.json.{os.getpid()}.tmp"
+    tmp = old.with_name(f"{old.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(item, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, old)
     return True
@@ -546,30 +718,42 @@ def journal_one(v, item, state):
     """대기열 항목 하나를 요약해 일지에 붙인다. 반환: 처리 결과 문자열. AuthError·TransientError 는 위로 올린다.
     done(요약한 줄 수)과 size 는 일이 끝났을 때만 기록한다(실패하면 다음에 같은 범위를 다시 본다)."""
     sid, path = item["session_id"], Path(item["transcript_path"])
+    codex = item.get("source") == "codex"  # Codex 항목: 상태 키 codex:<스레드 id>, rollout 형식, 라벨 [codex·폴더]
+    if not journal_source_on("codex" if codex else "claude"):
+        return "건너뜀(journal_sources 에 없음)"
     entry = state.setdefault(sid, {"done": 0})
     if entry.get("skip"):
         return f"건너뜀({entry['skip']})"
     if not path.exists():
         return "기록 파일 없음"
     size = path.stat().st_size
-    messages, total, cwd = read_transcript(path, entry.get("done", 0))
-    # 따라잡기 항목에는 cwd 가 없다. 기록에 적힌 cwd 로 판정해야 제외 폴더·임시 폴더 검사가 빠지지 않는다.
-    reason = skip_reason(path, item.get("cwd") or cwd)
+    if codex:  # 예약 작업 판정은 Claude Code 기록 형식에만 있다. Codex 는 폴더 규칙만 본다.
+        messages, total, cwd = read_codex_rollout(path, entry.get("done", 0))
+        reason = cwd_skip_reason(item.get("cwd") or cwd)
+    else:
+        messages, total, cwd = read_transcript(path, entry.get("done", 0))
+        # 따라잡기 항목에는 cwd 가 없다. 기록에 적힌 cwd 로 판정해야 제외 폴더·임시 폴더 검사가 빠지지 않는다.
+        reason = skip_reason(path, item.get("cwd") or cwd)
     if reason:
         entry["skip"] = reason
         return f"건너뜀({reason})"
-    text = digest(messages)
+    last = next((m["ts"] for m in reversed(messages) if m["ts"]), None)
+    if item.get("reason") == "catch-up" and last and last < now() - dt.timedelta(days=CATCHUP_MAX_DAYS):
+        # 기록 파일·Codex 스레드는 대화 없이도(열어 보기·이름 바꾸기) 수정 시각이 바뀐다. 마지막 말이 오래됐으면 소급하지 않는다.
+        entry.update(done=total, size=size)  # 다시 넣지 않는다. 나중에 대화가 이어지면 늘어난 만큼만 본다
+        return f"건너뜀(마지막 대화 {last:%Y-%m-%d}, {CATCHUP_MAX_DAYS}일 넘음)"
+    text = digest(messages, "Codex" if codex else "Claude")
     if len(text.encode("utf-8")) < JOURNAL_MIN_BYTES:
         entry["size"] = size  # done 은 그대로: 다음에 늘어난 만큼과 합친다
         return f"건너뜀(새 대화 {len(text.encode('utf-8'))}B < 1KB)"
-    label = project_label(item.get("cwd") or cwd)
-    answer = ask_model(JOURNAL_SYSTEM, f"프로젝트 폴더: {label}\n<대화>\n{text}\n</대화>")
+    folder = project_label(item.get("cwd") or cwd)
+    label = f"codex·{folder}" if codex else folder
+    answer = ask_model(JOURNAL_SYSTEM, f"프로젝트 폴더: {folder}\n<대화>\n{text}\n</대화>")
     summary = pick_summary(answer)
     if not summary or summary.upper().startswith("SKIP"):
         entry.update(done=total, size=size)
         return "SKIP(남길 일 없음)"
-    when = next((m["ts"] for m in reversed(messages) if m["ts"]), None) or now()
-    written = append_journal(v, when, label, summary)
+    written = append_journal(v, last or now(), label, summary)
     entry.update(done=total, size=size)
     return f"기록: {written.name} ← {summary[:60]}"
 
@@ -606,7 +790,8 @@ def drain_queue(logname, limit=25):
             except (OSError, ValueError):
                 qp.unlink(missing_ok=True)
                 continue
-            sid = item.get("session_id", "?")[:8]
+            sid = item.get("session_id", "?")
+            sid = sid[:14] if sid.startswith("codex:") else sid[:8]
             try:
                 result = journal_one(v, item, state)
             except AuthError as e:
@@ -620,6 +805,13 @@ def drain_queue(logname, limit=25):
                 item["tries"] = item.get("tries", 0) + 1
                 if item["tries"] >= 3:
                     _finish(qp, item)
+                    # 지금 크기를 적어 둔다: 따라잡기가 같은 기록을 1시간마다 다시 넣지 않고, 기록이 늘어나면 그때 다시 본다.
+                    # done 은 그대로라 다시 볼 때 실패한 범위부터 본다.
+                    try:
+                        state.setdefault(item["session_id"], {"done": 0})["size"] = \
+                            Path(item["transcript_path"]).stat().st_size
+                    except (KeyError, TypeError, OSError):
+                        pass
                     log(logname, f"{sid} 3번 실패로 버림: {type(e).__name__}: {e}")
                 else:
                     _finish(qp, item, keep=item)

@@ -1,14 +1,29 @@
+import contextlib
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "tools/claude_setup.py"
+KIT = Path(__file__).resolve().parents[1]
+SCRIPT = KIT / "tools/claude_setup.py"
 OTHER = {"type": "command", "command": "echo other", "timeout": 5}
+
+
+def tree(root):
+    """폴더 안 파일의 상대 경로 → 내용."""
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def kit_skill_files():
+    return {name for name in tree(KIT / "skills" / "second-brain")
+            if "__pycache__" not in name and name.rsplit("/", 1)[-1] not in ("local.md", "config.json")}
 
 
 def brain_groups(settings):
@@ -20,13 +35,17 @@ class ClaudeSetupTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="claude-setup-test-")
         self.addCleanup(temporary.cleanup)
-        self.claude = Path(temporary.name) / ".claude"
+        self.home = Path(temporary.name)  # 가짜 홈 폴더. Codex·Antigravity 스킬도 여기 아래로만 간다
+        self.claude = self.home / ".claude"
         self.claude.mkdir()
         self.settings = self.claude / "settings.json"
         self.claude_md = self.claude / "CLAUDE.md"
+        self.codex_skill = self.home / ".agents" / "skills" / "second-brain"
+        self.antigravity_skill = self.home / ".gemini" / "config" / "skills" / "second-brain"
 
     def run_setup(self, *args, exit_code=0):
-        result = subprocess.run([sys.executable, str(SCRIPT), *args, "--claude-dir", str(self.claude)],
+        result = subprocess.run([sys.executable, str(SCRIPT), *args, "--claude-dir", str(self.claude),
+                                 "--home", str(self.home)],
                                 capture_output=True, text=True, encoding="utf-8", timeout=30,
                                 env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
         self.assertNotIn("Traceback", result.stdout + result.stderr)
@@ -90,6 +109,63 @@ class ClaudeSetupTests(unittest.TestCase):
         self.assertEqual(self.backups(), [])
         self.assertEqual(len(brain_groups(json.loads(self.settings.read_text(encoding="utf-8")))), 2)
         self.assertTrue(self.claude_md.read_text(encoding="utf-8").startswith("<!-- brain:start -->\n"))
+        skill = self.claude / "skills" / "second-brain"
+        self.assertIn(f"Installed: {skill}", out)
+        self.assertEqual(set(tree(skill)), kit_skill_files())
+        self.assertEqual(sorted(p.name for p in self.home.iterdir()), [".claude"])  # 기본은 Claude Code 만
+
+    def test_antigravity_gets_only_second_brain_skill_and_rerun_is_idempotent(self):
+        out = self.run_setup("install", "--antigravity")
+        self.assertIn(f"Installed: {self.antigravity_skill}", out)
+        files = tree(self.antigravity_skill)
+        self.assertEqual(set(files), kit_skill_files())
+        for name in ("SKILL.md", "scripts/sb.py", "references/capture.md", "assets/starter-vault/AGENTS.md"):
+            self.assertIn(name, files)
+        self.assertEqual(files, tree(self.claude / "skills" / "second-brain"))
+        self.assertEqual(sorted(p.name for p in self.home.iterdir()), [".claude", ".gemini"])  # Codex 는 안 깐다
+        self.assertEqual(sorted(p.name for p in (self.home / ".gemini").iterdir()), ["config"])
+        self.assertEqual(sorted(p.name for p in (self.home / ".gemini" / "config").iterdir()), ["skills"])
+        self.assertEqual(sorted(p.name for p in self.antigravity_skill.parent.iterdir()), ["second-brain"])
+
+        whole = tree(self.home)
+        again = self.run_setup("install", "--antigravity")
+        self.assertIn(f"Installed: {self.antigravity_skill}", again)
+        self.assertIn("settings.json: 변경 없음", again)
+        self.assertEqual(tree(self.home), whole)  # 다시 깔아도 파일·내용이 그대로, 백업도 새로 안 생긴다
+
+    def test_all_installs_three_targets_but_claude_extras_only_in_claude(self):
+        out = self.run_setup("install", "--all")
+        claude_skill = self.claude / "skills" / "second-brain"
+        for skill in (claude_skill, self.codex_skill, self.antigravity_skill):
+            self.assertIn(f"Installed: {skill}", out)
+            self.assertEqual(tree(skill), tree(claude_skill))
+        self.assertEqual(set(tree(claude_skill)), kit_skill_files())
+        for skills in (self.codex_skill.parent, self.antigravity_skill.parent):  # inbox·init-project 는 Claude Code 전용
+            self.assertEqual(sorted(p.name for p in skills.iterdir()), ["second-brain"])
+        self.assertEqual(sorted(p.name for p in (self.claude / "skills").iterdir()), ["inbox", "init-project", "second-brain"])
+        for skill in (self.codex_skill, self.antigravity_skill):  # hook·settings.json·CLAUDE.md 도 Claude Code 에만
+            top = self.home / skill.relative_to(self.home).parts[0]
+            self.assertEqual([p for p in top.rglob("*") if p.is_file() and skill not in p.parents], [])
+        self.assertEqual(sorted(p.name for p in self.home.iterdir()), [".agents", ".claude", ".gemini"])
+
+        whole = tree(self.home)
+        self.run_setup("install", "--codex", "--antigravity")  # --all 과 같은 결과
+        self.assertEqual(tree(self.home), whole)
+
+    def test_skill_copy_skips_personal_files_and_pycache(self):
+        spec = importlib.util.spec_from_file_location("claude_setup_under_test", SCRIPT)
+        setup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(setup)
+        fake = self.home / "kit"
+        for name in ("SKILL.md", "local.md", "config.json", "local.example.md", "scripts/sb.py",
+                     "scripts/__pycache__/sb.cpython-39.pyc", "assets/vault/.obsidian/app.json", "assets/vault/local.md"):
+            (fake / "skills" / "second-brain" / name).parent.mkdir(parents=True, exist_ok=True)
+            (fake / "skills" / "second-brain" / name).write_text(name, encoding="utf-8")
+        setup.KIT = fake
+        with contextlib.redirect_stdout(io.StringIO()):
+            setup.copy_skill(self.antigravity_skill)
+        self.assertEqual(sorted(tree(self.antigravity_skill)),
+                         ["SKILL.md", "assets/vault/.obsidian/app.json", "local.example.md", "scripts/sb.py"])
 
     def test_existing_brain_block_is_left_alone(self):
         text = "# 지침\n<!-- brain:start -->\n# 배운 규칙 (dream)\n- [L01] 내 규칙\n<!-- dream-last-id: 1 -->\n<!-- brain:end -->\n"
@@ -124,6 +200,35 @@ class ClaudeSetupTests(unittest.TestCase):
                          {"hooks": {"SessionEnd": [{"hooks": [OTHER]}]}})
         self.assertIn("<!-- brain:start -->", self.claude_md.read_text(encoding="utf-8"))
         self.assertIn("변경 없음", self.run_setup("remove"))
+
+    def test_remove_names_skill_copies_and_keeps_files(self):
+        self.run_setup("install", "--all")
+        before = tree(self.home / ".gemini")
+        out = self.run_setup("remove")  # remove 는 hook 등록만 뺀다. 스킬 사본은 지우지 않고 위치만 알려 준다
+        for skill in (self.claude / "skills" / "second-brain", self.codex_skill, self.antigravity_skill):
+            self.assertIn(str(skill), out)
+        self.assertEqual(tree(self.home / ".gemini"), before)
+        shutil.rmtree(self.home / ".gemini")
+        self.assertNotIn(str(self.antigravity_skill), self.run_setup("remove"))
+
+    @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "install.ps1 은 Windows PowerShell 에서만 시험한다")
+    def test_install_ps1_forwards_switches(self):
+        # python 을 인자만 찍는 함수로 바꾸고 PATH 에서도 빼서, 실제 설치(~/.claude 쓰기)는 어떤 경우에도 돌지 않는다
+        powershell = shutil.which("powershell")
+        script = str(KIT / "install.ps1").replace("'", "''")
+        env = dict(os.environ, PATH=str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"))
+        for switches, flags in (("", []), ("-Codex", ["--codex"]), ("-Antigravity", ["--antigravity"]),
+                                ("-All", ["--codex", "--antigravity"]), ("-Codex -All", ["--codex", "--antigravity"])):
+            with self.subTest(switches=switches):
+                command = ("function python { $args | ForEach-Object { 'ARG ' + $_ }; $global:LASTEXITCODE = 0 }; "
+                           f"& '{script}' {switches}")
+                result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+                                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                args = [line[4:] for line in result.stdout.splitlines() if line.startswith("ARG ")]
+                for name in ("install", "--claude-dir", "--home"):
+                    self.assertIn(name, args)
+                self.assertEqual([a for a in args if a in ("--codex", "--antigravity", "--all")], flags)
 
 
 if __name__ == "__main__":

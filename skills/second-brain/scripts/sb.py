@@ -97,7 +97,8 @@ BUILTIN = {
     "Check": '---\ntype: check\ntags: []\ncreated: <% tp.date.now("YYYY-MM-DDTHH:mm") %>\n---\n'
              "# <% tp.file.title %>\n\n"
              "> 🤖 세컨드 브레인 점검에서 사용자 결정이 필요한 항목이다. `/inbox`에서 하나씩 정한다. "
-             "정한 항목은 `- [x]`로 바꾸고 줄 끝에 `→ 결정: 내용 (YYYY-MM-DD)`를 단다. 무인 루틴은 이 파일을 처리하지 않는다.\n\n"
+             "정한 항목은 `- [x]`로 바꾸고 줄 끝에 `→ 결정: 내용 (YYYY-MM-DD)`를 단다. "
+             "`추천대로: A2, A4`처럼 ID를 나열하면 적힌 추천을 그대로 결정으로 받는다. 무인 루틴은 이 파일을 처리하지 않는다.\n\n"
              "## 결정 대기\n\n## 웹으로 채울 빈칸\n\n## 처리 결과\n",
 }
 FOLDERS = ["00_Inbox", "10_Daily/Weekly", "20_Projects", "30_Areas", "40_Resources/해결 기록",
@@ -809,9 +810,11 @@ def plain(line):
 
 
 def pending_decisions(text):
-    """점검 결과 노트의 `## 결정 대기` 절에 남은 `- [ ]` 항목 수(다른 절의 체크박스는 세지 않는다)."""
+    """점검 결과 노트의 `## 결정 대기` 절에 남은 `- [ ]` 항목 수.
+    다른 절의 체크박스와 `→ 보류` 항목은 세지 않는다(세션 시작 알림 hook 과 같은 기준)."""
+    text = text.replace("\r\n", "\n")
     section = re.search(r"^## 결정 대기[^\n]*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
-    return len(re.findall(r"^- \[ \]", section[1], re.M)) if section else 0
+    return sum("→ 보류" not in s for s in re.findall(r"^- \[ \].*$", section[1], re.M)) if section else 0
 
 
 def summary_of(text, kind):

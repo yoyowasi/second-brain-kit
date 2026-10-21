@@ -34,8 +34,9 @@
 - 회사 프로젝트 폴더: 예) `~/work` — 그 아래 저장소 노트는 `area: "[[업무]]"`, 그 밖(개인 저장소)은 `area: "[[학습]]"`
 
 ## Claude Code hook (설치했을 때)
-- 세션 일지·dream에서 뺄 작업 폴더는 `config.json`의 `journal_exclude`에 경로 조각으로 적는다. 예) 개인 문서 폴더
+- 세션 일지·dream에서 뺄 작업 폴더는 `config.json`의 `journal_exclude`에 경로 조각으로 적는다(Codex 세션에도 적용). 예) 개인 문서 폴더
 - 세션 일지·dream 제안도 볼트 노트라 볼트 백업(git 등)에 함께 올라간다. 올리고 싶지 않은 폴더의 세션은 위 목록에 넣는다.
+- Codex 세션도 기본으로 일지에 들어간다(`- HH:MM [codex·폴더] 요약`, 다음 Claude Code 세션을 시작할 때 붙는다). 빼려면 `config.json`에 `"journal_sources": ["claude"]`를 적는다. dream 제안은 Claude Code 대화만 본다.
 
 ## 검증 범위 라벨
 - 예) `코드(정적: type-check)`, `API`, `DB(dev|운영)`, `브라우저(dev, 날짜)`, `운영`

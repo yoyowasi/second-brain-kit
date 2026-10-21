@@ -1,12 +1,16 @@
-"""Claude Code 쪽 설치 — hook·전용 스킬 복사와 settings.json·전역 CLAUDE.md 고치기. Python 3.9+, 표준 라이브러리만.
+"""세컨드 브레인 설치 — second-brain 스킬 복사, Claude Code 쪽 hook·전용 스킬 복사와 settings.json·전역 CLAUDE.md 고치기.
+Python 3.9+, 표준 라이브러리만.
 
-  python tools/claude_setup.py install [--python CMD] [--claude-dir DIR]
-      hook·스킬 복사, settings.json 에 hook 등록, CLAUDE.md 에 brain 구역 추가
-  python tools/claude_setup.py remove [--claude-dir DIR]
+  python tools/claude_setup.py install [--python CMD] [--claude-dir DIR] [--home DIR] [--codex] [--antigravity] [--all]
+      second-brain 스킬 복사(Claude Code, 옵션으로 Codex·Antigravity), hook·전용 스킬 복사,
+      settings.json 에 hook 등록, CLAUDE.md 에 brain 구역 추가
+  python tools/claude_setup.py remove [--claude-dir DIR] [--home DIR]
       settings.json 에서 brain hook 등록만 뺀다(파일·CLAUDE.md 는 그대로)
 
 여러 번 실행해도 결과가 같다(멱등). 고칠 것이 있을 때만 원본을 `<파일>.bak-<날짜시각>` 으로 남기고 쓴다.
-대상 폴더는 기본 ~/.claude 다. install.ps1·install.sh 가 스킬을 복사한 폴더를 --claude-dir 로 넘겨 부른다.
+대상 폴더는 기본 ~/.claude 다. install.ps1·install.sh 가 --claude-dir·--home 을 넘겨 부른다.
+Codex(~/.agents/skills)·Antigravity(~/.gemini/config/skills)에는 second-brain 스킬만 복사한다.
+hook·/inbox·/init-project·settings.json·CLAUDE.md 는 Claude Code 전용이다.
 """
 import argparse
 import datetime as dt
@@ -19,6 +23,8 @@ import sys
 KIT = Path(__file__).resolve().parents[1]
 HOOK_FILES = ("brain_common.py", "brain-journal.py", "brain-dream.py", "brain-lint-reminder.py")
 SKILLS = ("inbox", "init-project")
+SKILL = "second-brain"
+SKIP_NAMES = ("local.md", "config.json")  # 개인 설정은 ~/.second-brain 에 둔다. 키트 안에 실수로 있어도 복사하지 않는다
 # 이벤트마다 hook 그룹 하나. 그룹 안 순서대로 돈다(안내 줄을 먼저 내고, 오래 걸리는 dream 은 떼어 낸 프로세스로).
 EVENTS = {"SessionStart": ("brain-lint-reminder.py", "brain-dream.py"), "SessionEnd": ("brain-journal.py",)}
 BLOCK_START, BLOCK_END = "<!-- brain:start -->", "<!-- brain:end -->"
@@ -152,15 +158,41 @@ def copy_files(claude):
         print(f"Installed: {dst}")
 
 
+def skill_targets(claude, home, codex=False, antigravity=False):
+    targets = [claude / "skills" / SKILL]
+    if codex:  # Codex 사용자 스킬 폴더
+        targets.append(home / ".agents" / "skills" / SKILL)
+    if antigravity:  # Antigravity 사용자 스킬 폴더
+        targets.append(home / ".gemini" / "config" / "skills" / SKILL)
+    return targets
+
+
+def copy_skill(dst):
+    src = KIT / "skills" / SKILL
+    for path in sorted(src.rglob("*")):
+        rel = path.relative_to(src)
+        if not path.is_file() or path.name in SKIP_NAMES or "__pycache__" in rel.parts:
+            continue
+        (dst / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, dst / rel)
+    print(f"Installed: {dst}")
+
+
 def main():
-    ap = argparse.ArgumentParser(description="세컨드 브레인 Claude Code 설치(hook·전용 스킬·settings.json·CLAUDE.md)")
+    ap = argparse.ArgumentParser(description="세컨드 브레인 설치(second-brain 스킬, Claude Code hook·전용 스킬·settings.json·CLAUDE.md)")
     ap.add_argument("action", choices=("install", "remove"))
     ap.add_argument("--python", default="python", help='hook 을 돌릴 명령(기본 python, macOS·Linux 는 보통 python3)')
     ap.add_argument("--claude-dir", default=str(Path.home() / ".claude"),
-                    help="Claude Code 설정 폴더(기본 ~/.claude). 설치 스크립트는 스킬을 복사한 쪽과 같은 폴더를 넘긴다")
+                    help="Claude Code 설정 폴더(기본 ~/.claude). 설치 스크립트는 $HOME/.claude 를 넘긴다")
+    ap.add_argument("--home", default=str(Path.home()), help="Codex·Antigravity 스킬 폴더의 기준 홈 폴더(기본 ~)")
+    ap.add_argument("--codex", action="store_true", help="second-brain 스킬을 ~/.agents/skills 에도 복사")
+    ap.add_argument("--antigravity", action="store_true", help="second-brain 스킬을 ~/.gemini/config/skills 에도 복사")
+    ap.add_argument("--all", action="store_true", help="--codex --antigravity 와 같다(Claude Code 는 늘 설치)")
     a = ap.parse_args()
-    claude = Path(a.claude_dir)
+    claude, home = Path(a.claude_dir), Path(a.home)
     if a.action == "install":
+        for dst in skill_targets(claude, home, a.codex or a.all, a.antigravity or a.all):
+            copy_skill(dst)
         copy_files(claude)
         configure_settings(claude, a.python)
         configure_claude_md(claude)
@@ -182,8 +214,11 @@ def main():
         save(path, raw, dump(data), "settings.json")
     print("남은 것(필요하면 직접 지운다): "
           f"{claude / 'hooks'}의 brain_common.py·brain-*.py·brain-*.log, {claude / 'skills'}의 inbox·init-project, "
-          f"{Path.home() / '.second-brain' / 'state'}(대기열·상태), "
+          f"{home / '.second-brain' / 'state'}(대기열·상태), "
           f"{claude / 'CLAUDE.md'}의 {BLOCK_START} ~ {BLOCK_END} 구역(승인한 규칙이 들어 있어 자동으로 지우지 않는다)")
+    copies = [str(p) for p in skill_targets(claude, home, True, True) if p.is_dir()]
+    if copies:  # remove 는 hook 등록만 뺀다. 스킬 사본은 Codex·Antigravity 것도 직접 지운다
+        print(f"second-brain 스킬 사본(스킬까지 모두 지울 때): {', '.join(copies)}")
 
 
 if __name__ == "__main__":

@@ -176,6 +176,13 @@ bc.enqueue(iid, ip, None, "test")
 bc.drain_queue("journal")
 check("D2 Routines 를 언급한 사람 세션은 빼지 않음", len(calls) == n_before + 1 and not bc.load_state("journal")[iid].get("skip"))
 
+# D2a. 끝 구분자가 붙은 제외 항목도 그 폴더 자체를 거르고, 이름이 이어지는 옆 폴더는 거르지 않음
+bc.CFG["journal_exclude"] = [PRIVATE + os.sep]
+check("D2a 제외 폴더 자체·하위는 빼고 옆 폴더는 남김",
+      bc.cwd_skip_reason(PRIVATE) == "제외 폴더 세션"
+      and bc.cwd_skip_reason(os.path.join(PRIVATE, "x")) == "제외 폴더 세션"
+      and bc.cwd_skip_reason(PRIVATE + "2") is None)
+
 # D2b. 따라잡기 항목(cwd 없음)도 기록의 cwd 로 제외 폴더를 판정
 bc.CFG["journal_exclude"] = [PRIVATE]
 xid = str(uuid.uuid4())

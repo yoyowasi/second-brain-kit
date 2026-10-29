@@ -325,8 +325,10 @@ def cwd_skip_reason(cwd, stored=""):
     norm = os.path.normcase(os.path.abspath(cwd)) if cwd else ""
     if norm and norm.startswith(os.path.normcase(os.path.abspath(tempfile.gettempdir()))):
         return "임시 폴더 세션"
+    # 끝 구분자를 떼고 폴더 경계로 비교한다: "...\Codex\" 항목이 "...\Codex" 자체도 거르고 "...\Codex2" 는 거르지 않는다.
     for part in CFG.get("journal_exclude", []):
-        if part and norm and os.path.normcase(part) in norm:
+        p = os.path.normcase(part or "").rstrip("\\/")
+        if p and norm and p + os.sep in norm + os.sep:
             return "제외 폴더 세션"
     return None
 

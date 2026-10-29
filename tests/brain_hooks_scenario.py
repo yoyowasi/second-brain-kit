@@ -67,6 +67,16 @@ def check(label, ok, detail=""):
     print(f"{'PASS' if ok else 'FAIL'}  {label}  {detail}")
 
 
+def drain_at(day):
+    """고정 날짜 대화를 담은 따라잡기 항목이 실행 날짜에 따라 7일 판정에 걸리지 않게 그날을 '지금'으로 두고 처리한다."""
+    real = bc.now
+    bc.now = lambda: _dt.datetime.fromisoformat(day).replace(hour=23, tzinfo=bc.TZ)
+    try:
+        bc.drain_queue("journal")
+    finally:
+        bc.now = real
+
+
 calls = []
 
 
@@ -202,7 +212,7 @@ sp2 = T / "proj" / f"{sid2}.jsonl"
 sp2.write_text("\n".join([line("user", "스킬 개선해줘 " + "내용 " * 400, "2026-10-16T05:00:00Z", cwd=SW),
                           line("assistant", "개선했습니다 " + "답 " * 200, "2026-10-16T05:05:00Z", cwd=SW)]) + "\n", encoding="utf-8")
 bc.enqueue(sid2, sp2, None, "catch-up")
-bc.drain_queue("journal")
+drain_at("2026-10-16")
 check("D2c 폴더 없는 대화는 [폴더 없음]으로 기록", "- 14:05 [폴더 없음] " in bc.journal_path(v, "2026-10-16").read_text(encoding="utf-8"))
 mv = str(uuid.uuid4())
 (T / slug(SIDE)).mkdir(exist_ok=True)
@@ -755,7 +765,7 @@ check("X3 따라잡기: codex:<id> 키·source codex 로 대기열(파일 이름
       qitem.get("source") == "codex" and qitem.get("session_id") == f"codex:{MAIN}" and ":" not in qmain.name
       and qitem.get("cwd") == WORK and bc.queue_file(f"codex:{CLI}").exists(), (qmain.name, qitem))
 n_before = len(calls)
-bc.drain_queue("journal")
+drain_at("2026-10-17")
 cjp = bc.journal_path(v, "2026-10-17")
 ctxt = cjp.read_text(encoding="utf-8") if cjp.exists() else ""
 check("X4 일지 줄 [codex·<폴더>]", "- 10:10 [codex·shop-web] " in ctxt and len(calls) == n_before + 1, ctxt[-200:])

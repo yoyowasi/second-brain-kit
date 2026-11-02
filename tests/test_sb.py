@@ -15,7 +15,7 @@ class SecondBrainTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="second-brain-test-")
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(os.path.realpath(temporary.name))  # macOS 임시 폴더는 /var → /private/var 링크다
         self.vault = self.root / "vault"
         self.settings = self.root / "settings"
         self.env = dict(os.environ, SECOND_BRAIN_HOME=str(self.settings),

@@ -85,6 +85,7 @@
 | Claude Code 또는 Codex | 말로 부탁하는 AI 에이전트 | 터미널에서 실행된다 |
 | [Python](https://www.python.org/downloads/) 3.9 이상 | 보조 도구 `sb.py`와 Claude Code hook 실행(표준 라이브러리만 쓴다) | `python --version`(macOS·Linux는 `python3 --version`. Windows Git Bash에서는 bash 예시의 `python3` 대신 `python`) |
 | Git(선택) | 이 저장소 내려받기, 볼트 백업 | `git --version` |
+| [ripgrep](https://github.com/BurntSushi/ripgrep)(선택) | 볼트 검색 `rg`. Grep 도구가 있는 에이전트(Claude Code)에는 없어도 된다 | `rg --version` |
 
 ## 설치
 
@@ -237,7 +238,7 @@ rm -rf ~/.claude/skills/second-brain   # 스킬까지 모두 지울 때
 | `tools/claude_setup.py`, `tools/brain-claude-md.md` | `second-brain` 스킬 복사(Claude Code·Codex·Antigravity), hook·전용 스킬 복사와 `settings.json`·`CLAUDE.md` 고치기(설치 스크립트가 부른다), `CLAUDE.md`에 더하는 구역 |
 | `LICENSE` | MIT 라이선스 |
 
-테스트: 저장소 루트에서 `python -m unittest discover -s tests -v`를 실행한다(표준 라이브러리만 사용, macOS·Linux는 `python3`). `sb.py` 시험, 설치 보조 스크립트 시험(임시 폴더의 가짜 `~/.claude`), hook 시나리오(`tests/brain_hooks_scenario.py`를 별도 프로세스로, 가짜 모델·합성 대화 기록·임시 볼트)가 함께 돈다. 실제 `~/.claude`·`~/.second-brain`·볼트는 건드리지 않는다. 이 저장소에는 CI가 없고, 자동 시험은 Windows에서만 돌려 확인했다. `install.sh`와 macOS·Linux 분기는 자동 시험하지 않는다(`install.ps1`은 `python`을 가짜 함수로 바꿔 옵션 전달만 시험한다).
+테스트: 저장소 루트에서 `python -m unittest discover -s tests -v`를 실행한다(표준 라이브러리만 사용, macOS·Linux는 `python3`). `sb.py` 시험, 설치 보조 스크립트 시험(임시 폴더의 가짜 `~/.claude`), hook 시나리오(`tests/brain_hooks_scenario.py`를 별도 프로세스로, 가짜 모델·합성 대화 기록·임시 볼트)가 함께 돈다. 실제 `~/.claude`·`~/.second-brain`·볼트는 건드리지 않는다. GitHub Actions(`.github/workflows/tests.yml`)가 Windows·Ubuntu·macOS와 Python 3.9·3.13에서 같은 시험을 돌리고, Windows가 아닌 곳에서는 임시 홈 폴더에 `install.sh --all`도 실행해 본다(`install.ps1`은 `python`을 가짜 함수로 바꿔 옵션 전달과 `py -3` 대체만 시험한다).
 
 성능 비교: `python tests/benchmark_sb.py`는 격리된 임시 볼트에 노트 2,000개와 첨부 1,000개를 만들어 `origin/main`과 현재 작업 트리를 비교한다. 다른 버전은 `--refs REF worktree`로 지정하며, 결과 JSON의 임시 경로는 `<tmp>`로 표시한다.
 

@@ -141,7 +141,12 @@ def save_config(**kw):
     cfg = load_config()
     cfg.update(kw)
     HOME_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp = CONFIG.with_name(f".{CONFIG.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, CONFIG)  # 도중에 죽어도 설정이 잘리지 않게(잘리면 hook 이 볼트를 잃는다)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 VAULT_FOR_EXCLUDE = None  # exclude 해석 기준(볼트). resolve_vault가 정한다.
@@ -929,7 +934,7 @@ def cmd_log(a):
     except OSError:
         last = b"\n"
     prefix = "\n" if last == b"\n" else "\n\n"  # 끝 줄바꿈이 없으면 새 머리줄이 앞 줄에 붙는다
-    with open(target, "a", encoding="utf-8", newline="\n") as f:  # 덧붙이기만: 동시에 써도 서로 지우지 않는다
+    with open(target, "a", encoding="utf-8", newline="\n") as f:  # 덧붙이기만. Windows 에서 같은 순간에 쓰면 드물게 한쪽이 덮일 수 있다
         f.write(prefix + "\n".join(entry) + "\n")
     print(f"logged: {entry[0]}")
 

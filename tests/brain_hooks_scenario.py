@@ -248,7 +248,6 @@ p3 = calls[-1][2]
 check("D3 알림·peer·bash 출력은 일지 입력에서 빠짐", "진짜 사용자" in p3 and "push" not in p3 and "다른 세션" not in p3 and "Hunter2Pass" not in p3)
 
 # D4. 요약 본문에 401·invalid api key 가 있어도 로그인 실패로 보지 않음(ask_model 실제 판정 로직)
-real_run = bc.subprocess.run
 
 
 def fake_run(out, code=0, err=""):
@@ -260,14 +259,14 @@ spec = importlib.util.spec_from_file_location("bc_real", HOOKS / "brain_common.p
 real = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(real)
 real.shutil.which = lambda name: "claude.exe"
-real.subprocess.run = fake_run("auth-api 로그인 API 가 HTTP 401 을 돌려주던 원인과 Invalid API key 처리를 고쳤다.")
+real._run_model = fake_run("auth-api 로그인 API 가 HTTP 401 을 돌려주던 원인과 Invalid API key 처리를 고쳤다.")
 ok401 = real.ask_model("s", "p").startswith("auth-api")
-real.subprocess.run = fake_run("Failed to authenticate: OAuth session expired and could not be refreshed", 1)
+real._run_model = fake_run("Failed to authenticate: OAuth session expired and could not be refreshed", 1)
 try:
     real.ask_model("s", "p"); auth_raised = False
 except real.AuthError:
     auth_raised = True
-real.subprocess.run = fake_run("", 1, "API Error: Connection error.")
+real._run_model = fake_run("", 1, "API Error: Connection error.")
 try:
     real.ask_model("s", "p"); trans = False
 except real.TransientError:
@@ -278,7 +277,7 @@ def boom(*a, **k):
     raise subprocess.TimeoutExpired("claude", 1)
 
 
-real.subprocess.run = boom
+real._run_model = boom
 try:
     real.ask_model("s", "p"); trans2 = False
 except real.TransientError:
@@ -288,7 +287,7 @@ check("D4 401 이 든 정상 요약은 통과, 진짜 로그인 실패는 AuthEr
 
 
 def auth_of(out, code=0):
-    real.subprocess.run = fake_run(out, code)
+    real._run_model = fake_run(out, code)
     try:
         real.ask_model("s", "p")
         return False
@@ -304,7 +303,6 @@ CLI_AUTH = ["Not logged in · Please run /login", "Invalid API key · Please run
 check("D4b 'OAuth token…'으로 시작하는 정상 요약은 통과, CLI 로그인 안내는 종료 코드 0 이어도 AuthError",
       not any(auth_of(s) for s in SUMMARIES) and all(auth_of(s) for s in CLI_AUTH),
       ([auth_of(s) for s in SUMMARIES], [auth_of(s) for s in CLI_AUTH]))
-real.subprocess.run = real_run
 bc.ask_model = saved
 
 # D5. 일시 오류는 항목을 버리지 않고 tries 도 올리지 않음, 회복 후 처리
@@ -333,10 +331,11 @@ shutil.copy(tp, wp)
 orig_append = bc.append_journal
 bc.append_journal = lambda *a, **k: (_ for _ in ()).throw(PermissionError("drive lock"))
 bc.enqueue(wid, wp, None, "test")
-bc.drain_queue("journal")
+r = bc.drain_queue("journal")
 bc.append_journal = orig_append
 st_w = bc.load_state("journal").get(wid, {})
-check("D7 쓰기 실패 시 done 0 유지·항목 남음(tries 1)", st_w.get("done", 0) == 0 and json.loads((bc.QUEUE / f"{wid}.json").read_text(encoding="utf-8"))["tries"] == 1)
+check("D7 볼트 쓰기 실패는 일시 오류: done·size 그대로, 시도 횟수를 쓰지 않음", r == "transient" and st_w.get("done", 0) == 0 and "size" not in st_w
+      and json.loads((bc.QUEUE / f"{wid}.json").read_text(encoding="utf-8"))["tries"] == 0)
 bc.drain_queue("journal")
 check("D8 다음 실행에서 정상 기록", not (bc.QUEUE / f"{wid}.json").exists() and bc.load_state("journal")[wid]["done"] > 0)
 
@@ -999,6 +998,212 @@ for name in ("brain-journal", "brain-dream", "brain-lint-reminder"):
     r = subprocess.run([sys.executable, str(HOOKS / f"{name}.py")], input=b'{"session_id":"x","transcript_path":"y"}',
                        capture_output=True, env=dict(os.environ, BRAIN_JOURNAL="1"))
     check(f"G {name}: BRAIN_JOURNAL=1 이면 바로 끝", r.returncode == 0 and not r.stdout)
+
+# R. 실패 경로: 대기열 정지·상태 손상·요약 판정·쓰기·시간 제한·침묵
+bc.ask_model = fake
+for stale in bc.queue_items():
+    stale.unlink()
+
+
+def session():
+    sid = str(uuid.uuid4())
+    p = T / "proj" / f"{sid}.jsonl"
+    shutil.copy(tp, p)
+    return sid, p
+
+
+def reminder(env):
+    return subprocess.run([sys.executable, str(HOOKS / "brain-lint-reminder.py")], input=b"{}", capture_output=True,
+                          env=env).stdout.decode("utf-8")
+
+
+attempts = []
+
+
+def first_fails(system, prompt, model="haiku", timeout=0):
+    attempts.append(1)
+    if len(attempts) == 1:
+        raise bc.TransientError("이 항목만 실패")
+    return fake(system, prompt, model, timeout)
+
+
+head, head_p = session()
+tail, tail_p = session()
+bc.enqueue(head, head_p, None, "test")
+bc.enqueue(tail, tail_p, None, "test")
+os.utime(bc.queue_file(head), (1, 1))
+bc.ask_model = first_fails
+r = bc.drain_queue("journal")
+order = bc.queue_items()
+check("R1 일시 오류 항목은 맨 뒤로 가서 뒤 항목을 막지 않음", r == "transient" and order[0] == bc.queue_file(tail) and order[-1] == bc.queue_file(head))
+bc.drain_queue("journal")
+check("R1b 다음 실행에서 둘 다 처리", not bc.queue_items() and bc.load_state("journal")[tail]["done"] > 0)
+
+old, old_p = session()
+bc.enqueue(old, old_p, None, "test")
+old_item = json.loads(bc.queue_file(old).read_text(encoding="utf-8"))
+old_item["first_queued"] = (bc.now() - _dt.timedelta(days=bc.QUEUE_MAX_DAYS + 1)).isoformat()
+bc.queue_file(old).write_text(json.dumps(old_item), encoding="utf-8")
+bc.ask_model = transient
+r = bc.drain_queue("journal")
+check("R2 일시 오류로 멈춰도 오래 막힌 항목은 만료", r == "transient" and not bc.queue_file(old).exists())
+bc.ask_model = fake
+
+state_path = bc.STATE / "journal.json"
+state_saved = state_path.read_text(encoding="utf-8")
+state_path.write_text('{"broken', encoding="utf-8")
+bad_state, bad_state_p = session()
+bc.enqueue(bad_state, bad_state_p, None, "test")
+r = bc.drain_queue("journal")
+check("R3 일지 상태가 깨지면 멈추고 파일·대기열을 그대로 둠",
+      r == "transient" and state_path.read_text(encoding="utf-8") == '{"broken' and bc.queue_file(bad_state).exists())
+state_path.write_text(state_saved, encoding="utf-8")
+bc.drain_queue("journal")
+
+check("R4 SKIP 은 그 낱말뿐일 때만, 머리말처럼 보이는 요약도 살림",
+      bc.pick_summary("skip_reason 경계 버그를 고쳤다.") == "skip_reason 경계 버그를 고쳤다."
+      and bc.pick_summary("SKIP 처리 로직을 고쳤다.") == "SKIP 처리 로직을 고쳤다."
+      and bc.pick_summary("`SKIP`") == "SKIP" and bc.pick_summary("남길 일이 없다.\nSKIP.") == "SKIP"
+      and bc.pick_summary("SKIP: 인사만 있었다") == "SKIP" and bc.pick_summary("SKIP (남길 일 없음)") == "SKIP"
+      and bc.pick_summary("SKIP — 잡담뿐") == "SKIP"
+      and bc.pick_summary("일지를 한 줄로 요약하게 고쳤다.") == "일지를 한 줄로 요약하게 고쳤다."
+      and bc.pick_summary("") == "")
+
+moved, moved_p = session()
+bc.enqueue(moved, moved_p, tempfile.gettempdir(), "test")
+bc.drain_queue("journal")
+st_moved = bc.load_state("journal")[moved]
+check("R5 임시 폴더로 옮긴 채 끝난 세션도 기록의 폴더로 판정", not st_moved.get("skip") and st_moved["done"] > 0, st_moved)
+bc.CFG["journal_exclude"] = [PRIVATE]
+hidden, hidden_p = session()
+bc.enqueue(hidden, hidden_p, PRIVATE, "test")
+bc.drain_queue("journal")
+bc.CFG.pop("journal_exclude")
+check("R5b 제외 폴더로 옮겨 간 세션은 끝난 곳 기준으로도 뺌", bc.load_state("journal")[hidden].get("skip") == "제외 폴더 세션")
+
+lone = bc.message_of({"type": "user", "message": {"content": "앞\ud83d뒤"}})
+lone_blocks = bc.message_of({"type": "assistant", "message": {"content": [{"type": "text", "text": "앞\ud83d뒤"}]}})
+check("R6 짝 없는 서로게이트가 든 기록도 UTF-8 로 쓸 수 있음", lone == ("user", "앞?뒤") and lone_blocks == ("assistant", "앞?뒤"))
+
+atomic = T / "atomic" / "note.md"
+atomic.parent.mkdir()
+bc.atomic_write(atomic, "가\n나\n")
+check("R7 줄바꿈을 그대로 쓴다", atomic.read_bytes() == "가\n나\n".encode("utf-8"))
+real_replace, replaced = bc.os.replace, []
+
+
+def busy_twice(src, dst):
+    replaced.append(1)
+    if len(replaced) < 3:
+        raise PermissionError("held")
+    real_replace(src, dst)
+
+
+def always_busy(src, dst):
+    raise PermissionError("held")
+
+
+bc.os.replace = busy_twice
+bc.atomic_write(atomic, "새 내용\n")
+bc.os.replace = always_busy
+try:
+    bc.atomic_write(atomic, "실패할 내용\n", wait=0.1)
+    gave_up = False
+except PermissionError:
+    gave_up = True
+bc.os.replace = real_replace
+try:
+    bc.atomic_write(atomic, "x", exclusive=True)
+    refused = False
+except FileExistsError:
+    refused = True
+check("R7b 대상이 잡혀 있으면 다시 시도, 끝내 안 되면 원본을 두고 예외, 임시 파일 안 남김",
+      len(replaced) == 3 and gave_up and refused and atomic.read_text(encoding="utf-8") == "새 내용\n"
+      and [p.name for p in atomic.parent.iterdir()] == ["note.md"])
+
+holder = [sys.executable, "-c", "import subprocess, sys, time; "
+          "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)']); time.sleep(8)"]
+started = time.time()
+try:
+    bc._run_model(holder, "", 1)
+    timed_out = False
+except subprocess.TimeoutExpired:
+    timed_out = True
+check("R8 손자 프로세스가 파이프를 쥐어도 시간 제한을 지킴", timed_out and time.time() - started < 6, time.time() - started)
+deaf = [sys.executable, "-c", "import time; time.sleep(8)"]  # stdin 을 읽지 않는다
+started = time.time()
+try:
+    bc._run_model(deaf, "가" * 200_000, 1)
+    timed_out = False
+except subprocess.TimeoutExpired:
+    timed_out = True
+check("R8b 자식이 stdin 을 읽지 않아도 시간 제한을 지킴", timed_out and time.time() - started < 6, time.time() - started)
+echo = bc._run_model([sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read().upper())"], "abc", 10)
+check("R8c 정상 경로는 출력·종료 코드를 그대로 돌려줌", echo.stdout == "ABC" and echo.returncode == 0, echo)
+
+# R10. 일시 오류 항목 하나가 dream 을 막지 않는다(로그인 풀림만 막는다)
+for stale in bc.queue_items():
+    stale.unlink()
+stuck, stuck_p = session()
+bc.enqueue(stuck, stuck_p, None, "test")
+bc.ask_model = transient
+daily_calls = []
+real_daily, dream.daily = dream.daily, lambda vault_path: daily_calls.append(vault_path)
+real_sb, bc.run_sb = bc.run_sb, lambda *a, **k: None
+bc.save_state("dream", {"last_catchup": time.time()})
+dream.worker()
+dream.daily, bc.run_sb = real_daily, real_sb
+bc.ask_model = fake
+check("R10 일시 오류로 대기열이 멈춰도 dream 은 돈다", len(daily_calls) == 1 and bc.queue_file(stuck).exists(), daily_calls)
+bc.queue_file(stuck).unlink()
+
+bc.save_state("remind", {})
+bc.save_state("auth", {"failed_at": "2026-10-16T09:00", "message": "x"})
+out = reminder(dict(os.environ, BRAIN_DIR=str(T / "없는 볼트")))
+check("R9 볼트가 없어도 알리고 로그인 안내도 낸다", "볼트를 찾지 못해" in out and "없는 볼트" in out and "로그인이 풀려" in out, out[:200])
+bc.save_state("auth", {})
+no_vault_env = {k: w for k, w in os.environ.items() if k not in ("BRAIN_DIR", "SECOND_BRAIN")}
+broken_home = T / "broken-home"
+broken_home.mkdir()
+(broken_home / "config.json").write_text('{"vault": "C:/Not', encoding="utf-8")
+out = reminder(dict(no_vault_env, SECOND_BRAIN_HOME=str(broken_home)))
+check("R9b config.json 이 깨지면 알림", "config.json 을 읽지 못함" in out, out[:200])
+out = reminder(dict(no_vault_env, SECOND_BRAIN_HOME=str(T / "new-home")))
+check("R9c 설정 전(config 없음)이면 알리지 않음", "볼트를 찾지 못해" not in out, out[:200])
+bc.save_state("remind", {})
+state_saved = state_path.read_text(encoding="utf-8")
+state_path.write_text('{"broken', encoding="utf-8")
+out = reminder(dict(os.environ))
+state_path.write_text(state_saved, encoding="utf-8")
+check("R9d 일지 상태 파일이 깨지면 대기열이 비어도 알림", not bc.queue_items() and "상태 파일" in out and "journal.json" in out, out[:200])
+
+failing = T / "atomic" / "new.md"
+
+
+class FullDisk:
+    def __init__(self, f):
+        self.f = f
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.f.close()
+
+    def write(self, data):
+        self.f.write(data[:1])
+        self.f.flush()
+        raise OSError(28, "No space left on device")
+
+
+bc.open = lambda *a, **k: FullDisk(open(*a, **k))
+try:
+    bc.atomic_write(failing, "머리말\n", exclusive=True)
+    stopped = False
+except OSError:
+    stopped = True
+del bc.open
+check("R7c 새 파일 쓰기가 실패하면 조각을 남기지 않음", stopped and not failing.exists())
 
 # H. sb lint 로 hook 이 만든 파일 형식 확인
 r = subprocess.run([sys.executable, str(SB), "lint", str(jp), *map(str, files)], capture_output=True,

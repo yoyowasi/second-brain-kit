@@ -82,7 +82,7 @@ def update_state(**kw):
 
 def catchup():
     update_state(last_catchup=time.time())
-    journal = bc.load_state("journal")
+    journal = bc.load_state("journal", strict=True)  # 못 읽으면 예외: {} 로 보면 7일 치 세션을 다시 넣는다
     quiet_before = time.time() - IDLE_SECONDS
     since = time.time() - CATCHUP_DAYS * 86400
     found = []  # (상태 키, 기록 파일, cwd, source)
@@ -286,7 +286,7 @@ def write_inbox(v, proposals, kind, meta, keys=None):
         head = f"## {i}. {ACTION[p['action']]} · {where}" + (f" · 대상 {p['target']}" if p["target"] else "")
         lines += [head, f"- 규칙: {p['rule'] or '(뺌)'}", f"- 이유: {p['why'] or '-'}",
                   f"- 근거: {p['evidence'] or '-'}", ""]
-    bc._write_text(path, "\n".join(lines))
+    bc.atomic_write(path, "\n".join(lines))
     return path
 
 
@@ -434,8 +434,8 @@ def worker():
                 except Exception as e:  # noqa: BLE001 — 따라잡기가 깨져도 대기열·dream·색인은 돈다
                     bc.log(NAME, f"따라잡기 오류: {type(e).__name__}: {e}")
             stopped = bc.drain_queue(NAME)
-            if stopped and dream_due:
-                dream_due = False  # 로그인 풀림·일시 오류가 확인됐다. dream 은 다음 세션 시작 때(1시간 뒤부터).
+            if stopped == "auth" and dream_due:
+                dream_due = False  # 로그인이 풀렸다. dream 은 다음 세션 시작 때(1시간 뒤부터). 일시 오류는 항목 하나 탓일 수 있어 daily 가 직접 판단한다
                 update_state(last_attempt=time.time())
                 bc.log(NAME, f"요약 호출 불가({stopped}) — dream 은 건너뜀")
             if dream_due:

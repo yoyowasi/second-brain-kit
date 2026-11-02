@@ -75,6 +75,7 @@ def backup(path):
 
 
 def write_atomic(path, data):
+    path = path.resolve()  # dotfile 관리처럼 심볼릭 링크면 링크를 살리고 원본에 쓴다
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
@@ -167,6 +168,13 @@ def skill_targets(claude, home, codex=False, antigravity=False):
     return targets
 
 
+def same_dir(a, b):
+    try:
+        return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
+    except OSError:
+        return False
+
+
 def copy_skill(dst):
     src = KIT / "skills" / SKILL
     for path in sorted(src.rglob("*")):
@@ -196,13 +204,13 @@ def main():
         copy_files(claude)
         configure_settings(claude, a.python)
         configure_claude_md(claude)
-        try:
-            same = claude.resolve() == (Path.home() / ".claude").resolve()
-        except OSError:
-            same = False
-        if not same:  # 등록한 명령은 어느 PC 에서나 통하도록 $HOME/.claude/hooks 를 가리킨다
+        if not same_dir(claude, Path.home() / ".claude"):  # 등록한 명령은 어느 PC 에서나 통하도록 $HOME/.claude/hooks 를 가리킨다
             print(f'주의: settings.json 의 hook 명령은 "$HOME/.claude/hooks/..." 를 가리키는데 hook 파일은 {claude / "hooks"} 에 '
                   "복사했습니다. Claude Code 가 이 폴더를 설정 폴더로 쓰면(CLAUDE_CONFIG_DIR) settings.json 의 경로를 그 폴더로 직접 고치세요.")
+        active = os.environ.get("CLAUDE_CONFIG_DIR")
+        if active and not same_dir(claude, active):  # install 스크립트는 늘 ~/.claude 를 넘기므로 여기서 잡는다
+            print(f"주의: CLAUDE_CONFIG_DIR 이 {active} 라서 Claude Code 는 방금 설치한 {claude} 를 읽지 않습니다. "
+                  f'python tools/claude_setup.py install --claude-dir "{active}" 로 다시 설치하고 settings.json 의 hook 경로를 그 폴더로 고치세요.')
         return
     path = claude / "settings.json"
     raw, data = load_settings(path)

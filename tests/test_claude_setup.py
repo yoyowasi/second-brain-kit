@@ -43,11 +43,14 @@ class ClaudeSetupTests(unittest.TestCase):
         self.codex_skill = self.home / ".agents" / "skills" / "second-brain"
         self.antigravity_skill = self.home / ".gemini" / "config" / "skills" / "second-brain"
 
-    def run_setup(self, *args, exit_code=0):
+    def run_setup(self, *args, exit_code=0, config_dir=None):
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        if config_dir:
+            env["CLAUDE_CONFIG_DIR"] = str(config_dir)
         result = subprocess.run([sys.executable, str(SCRIPT), *args, "--claude-dir", str(self.claude),
                                  "--home", str(self.home)],
-                                capture_output=True, text=True, encoding="utf-8", timeout=30,
-                                env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+                                capture_output=True, text=True, encoding="utf-8", timeout=30, env=env)
         self.assertNotIn("Traceback", result.stdout + result.stderr)
         self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
         return result.stdout + result.stderr
@@ -211,24 +214,50 @@ class ClaudeSetupTests(unittest.TestCase):
         shutil.rmtree(self.home / ".gemini")
         self.assertNotIn(str(self.antigravity_skill), self.run_setup("remove"))
 
-    @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "install.ps1 은 Windows PowerShell 에서만 시험한다")
-    def test_install_ps1_forwards_switches(self):
+    def test_warns_when_claude_config_dir_differs(self):
+        self.assertNotIn("CLAUDE_CONFIG_DIR 이", self.run_setup("install"))
+        self.assertNotIn("CLAUDE_CONFIG_DIR 이", self.run_setup("install", config_dir=self.claude))
+        other = self.home / "other-claude"
+        self.assertIn(f"CLAUDE_CONFIG_DIR 이 {other}", self.run_setup("install", config_dir=other))
+
+    def test_install_keeps_symlinked_settings(self):
+        real = self.home / "dotfiles" / "settings.json"
+        real.parent.mkdir()
+        real.write_text("{}", encoding="utf-8")
+        try:
+            self.settings.symlink_to(real)
+        except OSError:
+            self.skipTest("심볼릭 링크를 만들 권한이 없다")
+        self.run_setup("install")
+        self.assertTrue(self.settings.is_symlink())
+        self.assertIn("SessionEnd", json.loads(real.read_text(encoding="utf-8"))["hooks"])
+
+    def run_install_ps1(self, fake_python, switches=""):
         # python 을 인자만 찍는 함수로 바꾸고 PATH 에서도 빼서, 실제 설치(~/.claude 쓰기)는 어떤 경우에도 돌지 않는다
         powershell = shutil.which("powershell")
         script = str(KIT / "install.ps1").replace("'", "''")
         env = dict(os.environ, PATH=str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"))
+        command = (f"function {fake_python} {{ $args | ForEach-Object {{ 'ARG ' + $_ }}; $global:LASTEXITCODE = 0 }}; "
+                   f"& '{script}' {switches}")
+        result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return [line[4:] for line in result.stdout.splitlines() if line.startswith("ARG ")]
+
+    @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "install.ps1 은 Windows PowerShell 에서만 시험한다")
+    def test_install_ps1_forwards_switches(self):
         for switches, flags in (("", []), ("-Codex", ["--codex"]), ("-Antigravity", ["--antigravity"]),
                                 ("-All", ["--codex", "--antigravity"]), ("-Codex -All", ["--codex", "--antigravity"])):
             with self.subTest(switches=switches):
-                command = ("function python { $args | ForEach-Object { 'ARG ' + $_ }; $global:LASTEXITCODE = 0 }; "
-                           f"& '{script}' {switches}")
-                result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", command],
-                                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                args = [line[4:] for line in result.stdout.splitlines() if line.startswith("ARG ")]
+                args = self.run_install_ps1("python", switches)
                 for name in ("install", "--claude-dir", "--home"):
                     self.assertIn(name, args)
                 self.assertEqual([a for a in args if a in ("--codex", "--antigravity", "--all")], flags)
+
+    @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "install.ps1 은 Windows PowerShell 에서만 시험한다")
+    def test_install_ps1_falls_back_to_py_launcher(self):
+        args = self.run_install_ps1("py")
+        self.assertEqual(args[args.index("--python") + 1], "py -3")
 
 
 if __name__ == "__main__":

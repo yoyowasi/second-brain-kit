@@ -6,7 +6,7 @@ argument-hint: "[만들기 / 찾기 / 기록 / 오늘 노트 / 인박스 정리 
 
 # Second Brain
 
-보조 도구 `scripts/sb.py`(Python 3.9+)가 날짜·템플릿 치환·중복 확인·점검을 맡는다. 아래 `sb <명령>`은 `python "<이 스킬 폴더>/scripts/sb.py" <명령>`이다.
+보조 도구 `scripts/sb.py`(Python 3.9+)가 날짜·템플릿 치환·중복 확인·점검을 맡는다. 아래 `sb <명령>`은 `python "<이 스킬 폴더>/scripts/sb.py" <명령>`이다(`python`이 없으면 `python3`, Windows는 `py -3`).
 
 ## 0. 시작할 때 (매번)
 

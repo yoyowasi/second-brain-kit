@@ -16,7 +16,7 @@ agent: general-purpose
 
 ## 0. 준비
 
-- `sb` = `python "$HOME/.claude/skills/second-brain/scripts/sb.py"`. `sb where`로 볼트(`<볼트>`)를, `sb today`로 날짜를 얻는다. `~/.second-brain/local.md`와 `<볼트>/AGENTS.md`를 읽는다(보안 금지 목록, 회사 폴더, 프로젝트 연결 표).
+- `sb` = `python "$HOME/.claude/skills/second-brain/scripts/sb.py"`(`python`이 없으면 `python3`, Windows는 `py -3`). `sb where`로 볼트(`<볼트>`)를, `sb today`로 날짜를 얻는다. `~/.second-brain/local.md`와 `<볼트>/AGENTS.md`를 읽는다(보안 금지 목록, 회사 폴더, 프로젝트 연결 표).
 - 볼트 파일은 절대 경로로 다룬다. 프로젝트 폴더는 **읽기만** 한다(파일 수정·git 쓰기 명령 금지).
 
 ## 1. 읽을 것 (있는 것만, 큰 파일은 앞부분만)

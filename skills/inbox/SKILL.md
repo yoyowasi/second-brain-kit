@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # /inbox — 인박스 정리 (사용자와 함께)
 
-`second-brain` 스킬의 0절(볼트 경로·`local.md`·`AGENTS.md`·날짜)을 먼저 따른다. 볼트 규칙의 원본은 볼트 `AGENTS.md`다. 아래 `sb`는 `python "$HOME/.claude/skills/second-brain/scripts/sb.py"`, `<볼트>`는 `sb where`의 vault 절대 경로다.
+`second-brain` 스킬의 0절(볼트 경로·`local.md`·`AGENTS.md`·날짜)을 먼저 따른다. 볼트 규칙의 원본은 볼트 `AGENTS.md`다. 아래 `sb`는 `python "$HOME/.claude/skills/second-brain/scripts/sb.py"`(`python`이 없으면 `python3`, Windows는 `py -3`), `<볼트>`는 `sb where`의 vault 절대 경로다.
 
 인자: `$ARGUMENTS` — `같이`가 있으면 3절의 "같이" 방식으로 한다.
 
@@ -22,7 +22,7 @@ disable-model-invocation: true
 `AGENTS.md` "인박스 정리" 절차를 따르고, 다음을 더한다.
 
 1. **읽기**: 본문이 링크뿐이면 가져와 읽는다(WebFetch). 못 가져오면 인박스에 그대로 두고 노트 끝에 `> 🤖 YYYY-MM-DD 가져오지 못함: 이유`를 단다.
-2. **찾고 나서 쓰기**: `<볼트>/99_System/색인.md` → `rg -il <키워드> "<볼트>"`(`.obsidian`·`99_System` 제외) 순으로 같은 주제를 찾는다. 있으면 그 노트에 합친다. 없으면 인박스 노트 자체를 맞는 폴더로 옮기고(이동) `type`·`area`·`tags`를 채운다(second-brain 스킬 6절). `sb new`는 자료 하나를 여러 노트로 나눌 때만 쓴다.
+2. **찾고 나서 쓰기**: `<볼트>/99_System/색인.md` → Grep 도구나 `rg -il <키워드> "<볼트>"`(`.obsidian`·`99_System` 제외) 순으로 같은 주제를 찾는다. 있으면 그 노트에 합친다. 없으면 인박스 노트 자체를 맞는 폴더로 옮기고(이동) `type`·`area`·`tags`를 채운다(second-brain 스킬 6절). `sb new`는 자료 하나를 여러 노트로 나눌 때만 쓴다.
 3. **여러 노트 반영**: 자료 하나가 여러 노트(프로젝트·참고 자료·영역)를 건드리면 각각에 반영하고 서로 링크한다. 새 사실이 기존 내용과 어긋나는데 어느 쪽이 맞는지 모르면 둘 다 출처와 함께 적고 `> 충돌: 무엇이 어긋나는지`를 단다.
 4. **할 일·일정**: `AGENTS.md`의 할 일 원본 규칙대로 오늘 일일 노트 `## 할 일` 또는 관련 active 프로젝트 `## 할 일`에 `- [ ] 내용 📅 YYYY-MM-DD`. `sb tasks`로 중복을 먼저 본다.
 5. **원본 처리**: 기존 노트에 합쳤거나 여러 노트로 나눈 인박스 원본만 `90_Archive/`로 옮기고(이동, 삭제 아님), 반영한 노트의 `## 출처`(없으면 `## 참고`)에 `[[원래 인박스 노트 이름]]`을 단다. 그대로 옮긴 노트는 2번으로 끝. 웹 자료는 링크와 `조사일: YYYY-MM-DD`.

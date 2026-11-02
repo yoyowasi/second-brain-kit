@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -53,10 +54,17 @@ JOURNAL_MAX_BYTES = 20 * 1024
 QUEUE_MAX_DAYS = 7
 
 
+CONFIG_ERROR = None
+
+
 def _config():
+    global CONFIG_ERROR
     try:
         return json.loads((SB_HOME / "config.json").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:  # 설정이 있는데 못 읽으면 lint-reminder 가 알린다
+        CONFIG_ERROR = f"{type(e).__name__}: {e}"
         return {}
 
 
@@ -74,6 +82,16 @@ def vault():
         return None
     path = Path(raw).expanduser()
     return path if path.is_dir() else None
+
+
+def vault_problem():
+    """볼트를 못 찾는 이유(안내용). 볼트가 있거나 아직 설정하기 전이면 None."""
+    if vault():
+        return None
+    if CONFIG_ERROR:
+        return f"{SB_HOME / 'config.json'} 을 읽지 못함({CONFIG_ERROR})"
+    raw = os.environ.get("BRAIN_DIR") or os.environ.get("SECOND_BRAIN") or CFG.get("vault")
+    return f"볼트 폴더가 없음: {raw}" if raw else None
 
 
 def journal_source_on(name):
@@ -95,18 +113,58 @@ def log(name, message):
         pass
 
 
-def load_state(name):
+def atomic_write(path, text, exclusive=False, wait=12.0):
+    """다 쓴 임시 파일로 교체해 도중에 죽어도 원본이 잘리지 않게 한다. 줄바꿈은 그대로 쓴다.
+    Windows 는 Drive·Obsidian 이 대상을 잡고 있으면 교체가 막히므로 wait 초까지 다시 시도하고, 그래도 안 되면 PermissionError.
+    exclusive: 새 파일 전용(이미 있으면 FileExistsError). 임시 파일 이름은 점으로 시작해 Obsidian·*.md 검색에 잡히지 않는다."""
+    data = text.encode("utf-8")  # 인코딩 오류는 파일을 건드리기 전에 드러난다
+    if exclusive:
+        f = open(path, "xb")
+        try:
+            with f:
+                f.write(data)
+        except OSError:  # 조각이 남으면 다음 실행이 기존 파일로 읽는다
+            path.unlink(missing_ok=True)
+            raise
+        return
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        delay, deadline = 0.1, time.monotonic() + wait
+        while True:
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 3.2)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def load_state(name, strict=False):
+    """strict: 파일이 없을 때만 {}. 못 읽거나 깨졌으면 예외를 낸다 — {} 로 이어 가면 덮어쓰면서 이력을 잃는다."""
     try:
         return json.loads((STATE / f"{name}.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
     except (OSError, ValueError):
+        if strict:
+            raise
         return {}
 
 
-def save_state(name, data):
+def save_state(name, data, wait=12.0):
     STATE.mkdir(parents=True, exist_ok=True)
-    tmp = STATE / f"{name}.json.{os.getpid()}.tmp"
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(tmp, STATE / f"{name}.json")
+    atomic_write(STATE / f"{name}.json", json.dumps(data, ensure_ascii=False, indent=1), wait=wait)
 
 
 class Lock:
@@ -218,9 +276,15 @@ def _content(obj):
     return message.get("content") if isinstance(message, dict) else None
 
 
+def _valid(text):
+    """기록의 짝 없는 서로게이트(\\ud83d)는 UTF-8 로 쓸 수 없어 일지·dream 을 멈춘다. 읽을 때 ? 로 바꾼다."""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
 def _texts(blocks, kind):
     """content 블록 중 type 이 kind 이고 text 가 글자열인 것만(깨진 줄의 dict·list text 는 뺀다)."""
-    return [b["text"] for b in blocks if isinstance(b, dict) and b.get("type") == kind and isinstance(b.get("text"), str)]
+    return [_valid(b["text"]) for b in blocks
+            if isinstance(b, dict) and b.get("type") == kind and isinstance(b.get("text"), str)]
 
 
 def message_of(obj):
@@ -235,7 +299,7 @@ def message_of(obj):
         return None
     content = _content(obj)
     if isinstance(content, str):
-        text = content if kind == "user" else ""
+        text = _valid(content) if kind == "user" else ""
     elif isinstance(content, list):
         if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
             return None
@@ -317,6 +381,17 @@ def _is_routine_start(path, limit=400):
     return False
 
 
+def excluded_cwd(cwd):
+    """config 의 journal_exclude 폴더 안인가."""
+    norm = os.path.normcase(os.path.abspath(cwd)) if cwd else ""
+    # 끝 구분자를 떼고 폴더 경계로 비교한다: "...\Codex\" 항목이 "...\Codex" 자체도 거르고 "...\Codex2" 는 거르지 않는다.
+    for part in CFG.get("journal_exclude", []):
+        p = os.path.normcase(part or "").rstrip("\\/")
+        if p and norm and p + os.sep in norm + os.sep:
+            return True
+    return False
+
+
 def cwd_skip_reason(cwd, stored=""):
     """작업 폴더로 뺄 세션: scratch·임시 폴더 세션, config 의 journal_exclude 폴더.
     stored 는 기록이 저장된 프로젝트 폴더 이름(cwd 를 옮긴 slug)이다(Claude Code 기록만)."""
@@ -325,12 +400,7 @@ def cwd_skip_reason(cwd, stored=""):
     norm = os.path.normcase(os.path.abspath(cwd)) if cwd else ""
     if norm and norm.startswith(os.path.normcase(os.path.abspath(tempfile.gettempdir()))):
         return "임시 폴더 세션"
-    # 끝 구분자를 떼고 폴더 경계로 비교한다: "...\Codex\" 항목이 "...\Codex" 자체도 거르고 "...\Codex2" 는 거르지 않는다.
-    for part in CFG.get("journal_exclude", []):
-        p = os.path.normcase(part or "").rstrip("\\/")
-        if p and norm and p + os.sep in norm + os.sep:
-            return "제외 폴더 세션"
-    return None
+    return "제외 폴더 세션" if excluded_cwd(cwd) else None
 
 
 def skip_reason(path, cwd):
@@ -537,6 +607,33 @@ _AUTH_ANY = re.compile(r"(?i)failed to authenticate|oauth session expired|not lo
                        r"invalid api key|authentication_error|api error:?\s*401")
 
 
+def _run_model(cmd, prompt, timeout, **kw):
+    """subprocess.run 은 Windows 에서 손자 프로세스가 파이프를 쥐면(npm 의 claude.cmd) timeout 뒤에도 돌아오지 않아 잠금을 쥔 채 멈춘다.
+    시간이 지나면 프로세스 트리째 끝내고 기다리지 않는다. communicate 의 timeout 은 Windows 에서 stdin 쓰기 중에는 재지 못해 감시 타이머를 따로 둔다."""
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         encoding="utf-8", errors="replace",
+                         creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0, **kw)
+    expired = []
+
+    def stop():
+        expired.append(True)
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True, timeout=30,
+                           creationflags=CREATE_NO_WINDOW)
+        p.kill()
+
+    watchdog = threading.Timer(timeout, stop)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        out, err = p.communicate(prompt, timeout=timeout + 1)  # 끝낸 뒤에도 파이프가 남아 있으면 포기한다
+    finally:
+        watchdog.cancel()
+    if expired:
+        raise subprocess.TimeoutExpired(cmd, timeout)
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+
+
 def ask_model(system, prompt, model="haiku", timeout=240):
     """도구 없는 claude -p 한 번. 입력은 stdin 으로 넘긴다(명령줄 길이 제한 회피)."""
     exe = shutil.which("claude")
@@ -550,9 +647,7 @@ def ask_model(system, prompt, model="haiku", timeout=240):
            "--system-prompt", system]
     try:
         with tempfile.TemporaryDirectory(prefix="brain-") as tmp:
-            r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", timeout=timeout, cwd=tmp, env=env,
-                               creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
+            r = _run_model(cmd, prompt, timeout, cwd=tmp, env=env)
     except subprocess.TimeoutExpired:
         raise TransientError(f"claude -p 시간 초과({timeout}초)")
     except OSError as e:
@@ -590,26 +685,15 @@ def journal_path(v, day):
     return v / "10_Daily" / "Journal" / f"{day} 세션.md"
 
 
-def _write_text(path, text):
-    for attempt in range(3):  # Google Drive·Obsidian 이 잠깐 잡고 있을 수 있다
-        try:
-            with open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(text)
-            return
-        except PermissionError:
-            if attempt == 2:
-                raise
-            time.sleep(1)
-
-
 def append_journal(v, when, label, summary):
     day = when.date().isoformat()
     path = journal_path(v, day)
     line = f"- {when:%H:%M} [{label}] {summary}"
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        text = path.read_text(encoding="utf-8", errors="replace")
-    else:
+    try:  # exists() 는 드라이브 오류도 False 로 삼킨다. 없다고 확인될 때만 새로 만들어 그날 일지를 덮어쓰지 않는다
+        text, new = path.read_text(encoding="utf-8", errors="replace"), False
+    except FileNotFoundError:
+        new = True
         text = (f"---\ntype: journal\ntags: []\ncreated: {when:%Y-%m-%dT%H:%M}\n---\n# {day} 세션\n\n"
                 f"← [[{day}]] · 세션 일지 hook 이 남기는 자동 일지다(Claude Code 는 세션이 끝날 때, "
                 f"Codex 는 다음 Claude Code 세션을 시작할 때 한 줄씩). 손으로 고치지 않는다.\n")
@@ -628,7 +712,7 @@ def append_journal(v, when, label, summary):
                 break
             at = i
     rows.insert(at, line)
-    _write_text(path, "\n".join(rows) + "\n")
+    atomic_write(path, "\n".join(rows) + "\n", exclusive=new)
     return path
 
 
@@ -647,14 +731,12 @@ _META = re.compile(r"한 줄로|요약(?:한다|하면|합니다|하겠|드리)|
 
 
 def pick_summary(answer):
-    """모델이 머리말("…한 줄로 요약한다.")을 먼저 쓰면 그 줄을 건너뛰고 요약 줄을 고른다."""
+    """모델이 머리말("…한 줄로 요약한다.")을 먼저 쓰면 그 줄을 건너뛰고 요약 줄을 고른다.
+    SKIP 은 그 낱말이나 "SKIP: 이유" 꼴의 줄일 때만 인정한다("skip_reason 을 고쳤다"도 요약이다). 머리말처럼 보이는 줄뿐이면 마지막 줄을 쓴다."""
     lines = [s.strip() for s in answer.splitlines() if s.strip()]
-    for s in lines:
-        if s.upper().startswith("SKIP"):
-            return "SKIP"
-        if not _META.search(s):
-            return clean_line(s)
-    return ""
+    if any(re.fullmatch(r"[\W_]*SKIP[\W_]*(?:[:(—–-].*)?", s, re.I) for s in lines):
+        return "SKIP"
+    return clean_line(next((s for s in lines if not _META.search(s)), lines[-1] if lines else ""))
 
 
 def digest(messages, assistant="Claude"):
@@ -691,9 +773,7 @@ def enqueue(session_id, transcript_path, cwd=None, reason=None, source=None):
             item["cwd"] = cwd or prev.get("cwd")
         except (OSError, ValueError):
             pass
-    tmp = old.with_name(f"{old.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(item, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, old)
+    atomic_write(old, json.dumps(item, ensure_ascii=False), wait=1)  # SessionEnd hook 안이다: 오래 기다리지 않는다
     return True
 
 
@@ -729,13 +809,16 @@ def journal_one(v, item, state):
     if not path.exists():
         return "기록 파일 없음"
     size = path.stat().st_size
+    end_cwd = item.get("cwd")  # 세션이 끝날 때 있던 폴더(cd 로 옮겨 다닌 결과). 따라잡기 항목에는 없다
     if codex:  # 예약 작업 판정은 Claude Code 기록 형식에만 있다. Codex 는 폴더 규칙만 본다.
         messages, total, cwd = read_codex_rollout(path, entry.get("done", 0))
-        reason = cwd_skip_reason(item.get("cwd") or cwd)
+        reason = cwd_skip_reason(cwd or end_cwd)
     else:
         messages, total, cwd = read_transcript(path, entry.get("done", 0))
-        # 따라잡기 항목에는 cwd 가 없다. 기록에 적힌 cwd 로 판정해야 제외 폴더·임시 폴더 검사가 빠지지 않는다.
-        reason = skip_reason(path, item.get("cwd") or cwd)
+        # 세션의 폴더로 판정한다: 잠깐 임시 폴더로 옮긴 채 끝났다고 세션 전체를 버리면 안 된다.
+        reason = skip_reason(path, cwd or end_cwd)
+    if not reason and excluded_cwd(end_cwd):  # 제외 폴더로 옮겨 간 세션은 끝난 곳 기준으로도 뺀다
+        reason = "제외 폴더 세션"
     if reason:
         entry["skip"] = reason
         return f"건너뜀({reason})"
@@ -748,14 +831,17 @@ def journal_one(v, item, state):
     if len(text.encode("utf-8")) < JOURNAL_MIN_BYTES:
         entry["size"] = size  # done 은 그대로: 다음에 늘어난 만큼과 합친다
         return f"건너뜀(새 대화 {len(text.encode('utf-8'))}B < 1KB)"
-    folder = project_label(item.get("cwd") or cwd)
+    folder = project_label(cwd or end_cwd)
     label = f"codex·{folder}" if codex else folder
     answer = ask_model(JOURNAL_SYSTEM, f"프로젝트 폴더: {folder}\n<대화>\n{text}\n</대화>")
     summary = pick_summary(answer)
-    if not summary or summary.upper().startswith("SKIP"):
+    if not summary or summary == "SKIP":
         entry.update(done=total, size=size)
         return "SKIP(남길 일 없음)"
-    written = append_journal(v, last or now(), label, summary)
+    try:
+        written = append_journal(v, last or now(), label, summary)
+    except OSError as e:  # 볼트 쪽 문제(동기화·드라이브)다. 항목 탓이 아니니 시도 횟수를 쓰지 않는다
+        raise TransientError(f"일지 쓰기 실패: {e}")
     entry.update(done=total, size=size)
     return f"기록: {written.name} ← {summary[:60]}"
 
@@ -769,12 +855,25 @@ def _finish(qp, item, keep=None):
     if current and current.get("queued_at") != item.get("queued_at"):
         if keep is not None:
             current["tries"] = keep.get("tries", 0)
-            qp.write_text(json.dumps(current, ensure_ascii=False), encoding="utf-8")
+            atomic_write(qp, json.dumps(current, ensure_ascii=False))
         return
     if keep is not None:
-        qp.write_text(json.dumps(keep, ensure_ascii=False), encoding="utf-8")
+        atomic_write(qp, json.dumps(keep, ensure_ascii=False))
     else:
         qp.unlink(missing_ok=True)
+
+
+def _expire_old(logname):
+    """너무 오래 막힌 항목은 버린다(기록 파일은 ~/.claude/projects 에 남아 있다)."""
+    for qp in queue_items():
+        try:
+            item = json.loads(qp.read_text(encoding="utf-8"))
+            first = dt.datetime.fromisoformat(item.get("first_queued") or item["queued_at"])
+        except (OSError, ValueError, KeyError):
+            continue
+        if (now() - first).days >= QUEUE_MAX_DAYS:
+            qp.unlink(missing_ok=True)
+            log(logname, f"{item['session_id'][:8]} {QUEUE_MAX_DAYS}일 넘게 처리 못 해 대기열에서 뺌")
 
 
 def drain_queue(logname, limit=25):
@@ -784,12 +883,19 @@ def drain_queue(logname, limit=25):
     if not v:
         log(logname, "볼트를 찾지 못해 대기열을 처리하지 않음")
         return None
-    state = load_state("journal")
+    try:
+        state = load_state("journal", strict=True)
+    except (OSError, ValueError) as e:  # {} 로 이어 가면 7일 치를 다시 요약하고 이력을 덮어쓴다. 파일은 그대로 둔다
+        log(logname, f"일지 상태를 읽지 못해 멈춤(대기 {len(queue_items())}건 유지): {type(e).__name__}: {e}")
+        return "transient"
     try:
         for qp in queue_items()[:limit]:
             try:
                 item = json.loads(qp.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+            except OSError:
+                continue  # 동기화 도구가 잠깐 잡고 있다. 다음 실행에서 다시
+            except ValueError:
+                log(logname, f"깨진 대기열 항목 삭제: {qp.name}")
                 qp.unlink(missing_ok=True)
                 continue
             sid = item.get("session_id", "?")
@@ -802,6 +908,11 @@ def drain_queue(logname, limit=25):
                 return "auth"
             except TransientError as e:
                 log(logname, f"일시 오류로 중단(대기 {len(queue_items())}건 유지, 다음 실행에서 다시): {e}")
+                try:
+                    _finish(qp, item, keep=item)  # 다시 쓰면 수정 시각이 바뀌어 맨 뒤로 간다: 이 항목만 실패해도 뒤 항목이 막히지 않게
+                    _expire_old(logname)
+                except OSError as err:
+                    log(logname, f"대기열 정리 실패(다음 실행에서 다시): {err}")
                 return "transient"
             except Exception as e:  # noqa: BLE001 — 항목 탓 실패(파일 쓰기 등)는 3번까지
                 item["tries"] = item.get("tries", 0) + 1
@@ -824,15 +935,7 @@ def drain_queue(logname, limit=25):
             note_auth(True)
             _finish(qp, item)
             log(logname, f"{sid}: {result}")
-        for qp in queue_items():  # 너무 오래 막힌 항목은 버린다(기록 파일은 ~/.claude/projects 에 남아 있다)
-            try:
-                item = json.loads(qp.read_text(encoding="utf-8"))
-                first = dt.datetime.fromisoformat(item.get("first_queued") or item["queued_at"])
-            except (OSError, ValueError, KeyError):
-                continue
-            if (now() - first).days >= QUEUE_MAX_DAYS:
-                qp.unlink(missing_ok=True)
-                log(logname, f"{item['session_id'][:8]} {QUEUE_MAX_DAYS}일 넘게 처리 못 해 대기열에서 뺌")
+        _expire_old(logname)
         rest = len(queue_items())
         if rest:
             log(logname, f"남은 대기 {rest}건은 다음 실행에서(한 번에 {limit}건까지)")

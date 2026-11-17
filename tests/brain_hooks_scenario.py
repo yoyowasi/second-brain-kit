@@ -375,6 +375,14 @@ check("D12 이미지·HTML·Templater·위키링크 무력화", "![" not in cl a
 check("D13 비밀정보 추가 형태", all("[비밀정보 제거됨]" in bc.scrub(s) for s in [
     '"password": "Hunter2Pass"', "sqlcmd -S x -P Sup3rSecret", "DB_PASS=abcd", "glpat-abcdefghij12345", "카드 4111-1111-1111-1111",
     "주민 9001011234567", "폰 010-1234-5678"]) and bc.scrub("mkdir -p dir") == "mkdir -p dir" and bc.scrub("bypass = true") == "bypass = true")
+# D14. 단어 중간의 sk- 같은 키 모양(메모리 파일 이름 등)은 남기고, 이스케이프·URL 인코딩 뒤를 포함한 진짜 키는 지운다
+_sk, _ghp, _akia, _bs = "sk-" + "a1B2c3D4e5" * 2, "ghp_" + "a1B2c3D4e5" * 2, "AKIA" + "ABCDEFGH12345678", chr(92)
+_kept = ["feedback-ask-profiler-when-binding-unknown", "feedback-one-task-orchestrate-ask-as-you-go",
+         "x" + _sk, "1" + _sk, "_" + _sk, "-" + _sk, "a" + _ghp, "X" + _akia]
+_hidden = [p + k for k in (_sk, _ghp, _akia)
+           for p in ("", "x ", '"', "k:", _bs + "n", _bs + "u0022", "%3D", chr(0x212A))] + ["mycompany-glpat-abcdefghij12345"]
+_wrong = [s for s in _kept if bc.scrub(s) != s] + [s for s in _hidden if "[비밀정보 제거됨]" not in bc.scrub(s)]
+check("D14 단어 중간 키 모양은 남기고 진짜 키는 지움", not _wrong, _wrong)
 
 
 # E. 로그인 실패: 대기열 보존 + 상태 기록 + 알림

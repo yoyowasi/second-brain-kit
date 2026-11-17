@@ -116,7 +116,13 @@ BAD_NAME = re.compile(r'[/\\:*?"<>|]')
 BAD_TITLE = re.compile(r'[/\\:*?"<>|#^\[\]]')  # 파일 이름 금지 문자 + Obsidian 링크를 깨는 # ^ [ ]
 SECRET = re.compile(
     r"(?i)(password|passwd|pwd|비밀번호|api[_-]?key|secret|token)\s*[:=]\s*\S{4,}"
-    r"|glpat-[0-9A-Za-z_\-]{10,}|gh[pousr]_[0-9A-Za-z]{20,}|sk-[0-9A-Za-z_\-]{20,}|AKIA[0-9A-Z]{16}"
+    # glpat- 은 인스턴스 접두어(회사-glpat-…)가 붙을 수 있어 경계 없이 잡는다
+    r"|glpat-[0-9A-Za-z_\-]{10,}"
+    # 나머지 키 모양은 단어 중간(예: feedback-ask-...)의 sk- 에 걸리지 않게 앞 글자가 영문·숫자·_·- 가 아닐 때만 잡는다.
+    # 단 JSON 이스케이프(백슬래시 n·t·r, 백슬래시 u 네 자리)나 URL 인코딩(%3D) 바로 뒤는 붙여 넣은 JSON·URL 이라 잡는다.
+    # (?-i: 는 대소문자 무시가 켈빈 기호(U+212A) 같은 비ASCII 글자를 영문으로 치지 않게 한다
+    r"|(?:(?-i:(?<![0-9A-Za-z_\-]))|(?<=\\[nrt])|(?<=\\u[0-9A-Fa-f]{4})|(?<=%[0-9A-Fa-f]{2}))"
+    r"(?:gh[pousr]_[0-9A-Za-z]{20,}|sk-[0-9A-Za-z_\-]{20,}|AKIA[0-9A-Z]{16})"
     r"|eyJ[0-9A-Za-z_\-]{10,}\.[0-9A-Za-z_\-]{10,}\.|-----BEGIN [A-Z ]*PRIVATE KEY-----"
 )
 

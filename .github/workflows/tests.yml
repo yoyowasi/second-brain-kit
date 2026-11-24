@@ -16,6 +16,13 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
         python: ["3.9", "3.13"]
+        # ubuntu-latest(26.04)에는 setup-python 의 3.9 빌드가 없어 3.9 만 24.04 에서 돈다
+        exclude:
+          - os: ubuntu-latest
+            python: "3.9"
+        include:
+          - os: ubuntu-24.04
+            python: "3.9"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

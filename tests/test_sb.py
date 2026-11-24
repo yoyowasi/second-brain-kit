@@ -1055,6 +1055,22 @@ class SecondBrainTests(unittest.TestCase):
         out = self.sb("today", "--date", "2026-10-16")
         self.assertRegex(out, r"journal: .*2026-10-16 세션\.md  exists=False")
 
+    def test_secret_pattern_matches_keys_at_word_start_only(self):
+        sk, ghp, akia, glpat = ("sk-" + "a1B2c3D4e5" * 2, "ghp_" + "a1B2c3D4e5" * 2, "AKIA" + "ABCDEFGH12345678",
+                                "glpat-" + "a1B2c3D4e5")
+        caught = [prefix + key for key in (sk, ghp, akia, glpat)
+                  for prefix in ("", "x ", '"', "'", "k=", "k:", "k: ", "\\n", "\\t", "\\u0022", "%3D", "\u212a")]
+        caught += ["api_key=" + sk, "mycompany-" + glpat]  # GitLab 인스턴스 접두어
+        missed = ["feedback-ask-profiler-when-binding-unknown", "feedback-one-task-orchestrate-ask-as-you-go",
+                  "x" + sk, "1" + sk, "_" + sk, "-" + sk, "a" + ghp, "X" + akia]
+        probe = ("import json, runpy, sys\n"
+                 "secret = runpy.run_path(sys.argv[1])['SECRET']\n"
+                 "print(json.dumps([bool(secret.search(t)) for t in json.load(sys.stdin)]))\n")
+        result = subprocess.run([sys.executable, "-c", probe, str(SCRIPT)], input=json.dumps(caught + missed).encode(),
+                                capture_output=True, env=self.env, cwd=self.root)
+        found = dict(zip(caught + missed, json.loads(result.stdout or b"null") or []))
+        self.assertEqual(found, {t: t in caught for t in caught + missed}, result.stderr.decode("utf-8", "replace"))
+
 
 if __name__ == "__main__":
     unittest.main()

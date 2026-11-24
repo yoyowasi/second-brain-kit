@@ -240,7 +240,13 @@ SECRET = re.compile(
     r"|(?-i:\b[A-Z0-9_]*(?:PASS|PASSWORD|PWD|SECRET|TOKEN|API_?KEY)[A-Z0-9_]*\s*=\s*\S+)"
     r"|(?:비밀번호|비번|패스워드)\s*(?:은|는|이|가|:)?\s*\S{4,}"
     r"|(?-i:\s-P\s+\S+)"  # sqlcmd/mysql 의 -P <비밀번호>
-    r"|gl(?:pat|dt|rt|cbt|ptt)-[0-9A-Za-z_\-]{10,}|gh[pousr]_[0-9A-Za-z]{20,}|sk-[0-9A-Za-z_\-]{20,}|AKIA[0-9A-Z]{16}"
+    # gl*- 토큰은 인스턴스 접두어(회사-glpat-…)가 붙을 수 있어 경계 없이 잡는다
+    r"|gl(?:pat|dt|rt|cbt|ptt)-[0-9A-Za-z_\-]{10,}"
+    # 나머지 키 모양은 단어 중간(예: feedback-ask-...)의 sk- 를 지우지 않게 앞 글자가 영문·숫자·_·- 가 아닐 때만 잡는다.
+    # 단 JSON 이스케이프(백슬래시 n·t·r, 백슬래시 u 네 자리)나 URL 인코딩(%3D) 바로 뒤는 붙여 넣은 JSON·URL 이라 잡는다.
+    # (?-i: 는 대소문자 무시가 켈빈 기호(U+212A) 같은 비ASCII 글자를 영문으로 치지 않게 한다. sb.py 의 SECRET 과 같은 규칙
+    r"|(?:(?-i:(?<![0-9A-Za-z_\-]))|(?<=\\[nrt])|(?<=\\u[0-9A-Fa-f]{4})|(?<=%[0-9A-Fa-f]{2}))"
+    r"(?:gh[pousr]_[0-9A-Za-z]{20,}|sk-[0-9A-Za-z_\-]{20,}|AKIA[0-9A-Z]{16})"
     r"|eyJ[0-9A-Za-z_\-]{10,}\.[0-9A-Za-z_\-]{10,}\.[0-9A-Za-z_\-]*"
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)"
     r"|\b(?:server|data source|user id|uid|initial catalog)\s*=\s*[^;\s]+"
